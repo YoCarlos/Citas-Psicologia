@@ -299,3 +299,64 @@ class DoctorSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class ReminderStatus(enum.Enum):
+    scheduled = "scheduled"
+    executed = "executed"
+    canceled = "canceled"
+    missed   = "missed"
+    error    = "error"
+
+
+class ReminderJob(Base):
+    __tablename__ = "reminder_jobs"
+
+    # id = "appt_reminder:{appointment_id}"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    appointment_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("appointments.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+
+    run_at_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    status: Mapped[ReminderStatus] = mapped_column(
+        Enum(ReminderStatus, name="reminder_status"),
+        nullable=False,
+        default=ReminderStatus.scheduled,
+    )
+
+    executed_at_utc: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    last_error: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relación opcional (si tienes Appointment en models)
+    appointment: Mapped["Appointment"] = relationship("Appointment", backref="reminder_jobs")
+
+    def __repr__(self) -> str:
+        return f"<ReminderJob id={self.id} appt={self.appointment_id} status={self.status.value}>"

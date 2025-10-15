@@ -1,8 +1,9 @@
 # app/schemas.py
 from datetime import date, datetime
+from enum import Enum
 import re
 from typing import Optional, Literal, List
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 UserRoleLiteral = Literal["doctor", "patient"]
 ApptStatusLiteral = Literal["free", "pending", "confirmed"]
@@ -321,3 +322,22 @@ class DoctorSettingsOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     class Config: from_attributes = True
+
+class ReminderStatusEnum(str, Enum):
+    scheduled = "scheduled"
+    executed = "executed"
+    canceled = "canceled"
+    missed   = "missed"
+    error    = "error"
+
+class ReminderJobOut(BaseModel):
+    id: str
+    appointment_id: int
+    run_at_utc: datetime
+    status: ReminderStatusEnum
+    executed_at_utc: Optional[datetime] = None
+    last_error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

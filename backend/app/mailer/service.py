@@ -1,49 +1,49 @@
-
+# app/mailer/service.py
+from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
+from fastapi_mail.errors import ConnectionErrors
+from typing import List, Dict, Any
 from app.email_settings import EmailSettings
-from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-from typing import Dict, Any, Sequence
-from pathlib import Path
+import logging
 
+log = logging.getLogger("mailer")
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
+def _build_conf(settings: EmailSettings) -> ConnectionConfig:
+    # Soporte por si tu settings viejo aún trae MAIL_USE_CREDENTIALS
+    use_creds = settings.USE_CREDENTIALS if settings.MAIL_USE_CREDENTIALS is None else settings.MAIL_USE_CREDENTIALS
 
-jinja_env = Environment(
-    loader=FileSystemLoader(TEMPLATES_DIR),
-    autoescape=select_autoescape(["html", "xml"])
-)
-
-def render_template(template_name: str, context: Dict[str, Any]) -> str:
-    return jinja_env.get_template(template_name).render(**context)
-
-def get_connection_config(settings: EmailSettings) -> ConnectionConfig:
     return ConnectionConfig(
-        MAIL_USERNAME=settings.MAIL_USERNAME or None,
-        MAIL_PASSWORD=settings.MAIL_PASSWORD or None,
-        MAIL_FROM=settings.MAIL_FROM,             # 👈 debe ser solo el email
-        MAIL_FROM_NAME=settings.MAIL_FROM_NAME,   # 👈 el nombre va aquí
+        MAIL_USERNAME=settings.MAIL_USERNAME,
+        MAIL_PASSWORD=settings.MAIL_PASSWORD,
+        MAIL_FROM=settings.MAIL_FROM,
+        MAIL_FROM_NAME=settings.MAIL_FROM_NAME,
         MAIL_SERVER=settings.MAIL_SERVER,
         MAIL_PORT=settings.MAIL_PORT,
         MAIL_STARTTLS=settings.MAIL_STARTTLS,
         MAIL_SSL_TLS=settings.MAIL_SSL_TLS,
-        USE_CREDENTIALS=settings.MAIL_USE_CREDENTIALS,
-        TEMPLATE_FOLDER=TEMPLATES_DIR,
+        USE_CREDENTIALS=use_creds,
+        VALIDATE_CERTS=settings.VALIDATE_CERTS,
+        TEMPLATE_FOLDER="app/mailer/templates",
     )
 
 async def send_email(
-    recipients: Sequence[str],
+    recipients: List[str],
     subject: str,
     template_name: str,
     context: Dict[str, Any],
-    settings: EmailSettings
-) -> None:
-    conf = get_connection_config(settings)
+    settings: EmailSettings,
+):
+    conf = _build_conf(settings)
     fm = FastMail(conf)
-    html_body = render_template(template_name, context)
-    message = MessageSchema(
+    msg = MessageSchema(
         subject=subject,
-        recipients=list(recipients),
-        body=html_body,
-        subtype=MessageType.html
+        recipients=recipients,
+        subtype="html",
+        template_body=context,
     )
-    await fm.send_message(message)
+    try:
+        await fm.send_message(msg, template_name=template_name)
+        log.info("Email sent: %s -> %s", subject, recipients)
+    except ConnectionErrors as ex:
+        log.error("SMTP connection error: %s", ex)
+    except Exception as ex:
+        log.exception("Email send failed: %s", ex)

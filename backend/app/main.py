@@ -2,9 +2,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
-from .scheduler import start_scheduler, shutdown_scheduler
-from .db import SessionLocal  # engine/Base no se usan aquí (migramos con Alembic)
-from .config import settings
+
+from .scheduler import start_scheduler, shutdown_scheduler, rebuild_jobs_on_startup
+from .db import SessionLocal
+from .config import settings as app_settings  
 
 # Routers
 from .routers import (
@@ -17,27 +18,35 @@ from .routers import (
     payments,
     availability,
     zoom_test,
-    settings,
+    settings as settings_router, 
     debug_email,
     debug_scheduler,
+    jobs,  
 )
 
 app = FastAPI(
     title="CitasPsico API",
-    version="0.2.0",
+    version="0.3.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
+# =========================
+# Eventos de ciclo de vida
+# =========================
 @app.on_event("startup")
 async def _startup():
+    # Inicia y reconstruye el scheduler con los jobs pendientes
     start_scheduler()
+    rebuild_jobs_on_startup()
 
 @app.on_event("shutdown")
 async def _shutdown():
     shutdown_scheduler()
 
-# --- CORS ---
+# =========================
+# CORS
+# =========================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -49,7 +58,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Routers ---
+# =========================
+# Routers
+# =========================
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(patients.router)
@@ -59,10 +70,14 @@ app.include_router(appointments.router)
 app.include_router(payments.router)
 app.include_router(availability.router)
 app.include_router(zoom_test.router)
-app.include_router(settings.router)
+app.include_router(settings_router.router)  # ✅ router settings renombrado
 app.include_router(debug_email.router)
 app.include_router(debug_scheduler.router)
-# --- Healthchecks ---
+app.include_router(jobs.router)  # ✅ añadido aquí
+
+# =========================
+# Healthchecks y debug
+# =========================
 @app.get("/")
 def root():
     return {"ok": True, "service": "CitasPsico API"}
@@ -75,26 +90,26 @@ def health_db():
 
 @app.get("/health/config")
 def health_config():
+    """
+    Verifica configuración base cargada desde .env (Zoom, JWT, TZ).
+    """
     return {
-        "jwt_alg": settings.JWT_ALG,
-        "tz": getattr(settings, "TZ", "America/Guayaquil"),
-        "zoom_api_base": settings.ZOOM_API_BASE,
+        "jwt_alg": getattr(app_settings, "JWT_ALG", None),
+        "tz": getattr(app_settings, "TZ", "America/Guayaquil"),
+        "zoom_api_base": getattr(app_settings, "ZOOM_API_BASE", None),
     }
 
-# --- Debug DB info ---
 @app.get("/debug/dbinfo")
 def debug_dbinfo():
     """
-    Muestra a qué DB se conecta la API y cuenta usuarios.
-    Funciona con Postgres/SQLite (sin funciones específicas).
+    Muestra información de conexión a la base de datos y conteo de usuarios.
     """
     info = {}
     with SessionLocal() as db:
         bind = db.get_bind()
-        dialect = bind.dialect.name  # 'postgresql' o 'sqlite'
+        dialect = bind.dialect.name
         url_str = str(bind.url)
 
-        # valores por defecto
         current_db = None
         server_host = None
         server_port = None
@@ -110,18 +125,15 @@ def debug_dbinfo():
                 users_count = db.execute(text("SELECT COUNT(*) FROM public.users")).scalar()
             except Exception:
                 users_count = None
-
         else:
-            # SQLite u otros
-            version = db.execute(text("SELECT 1")).scalar()  # sanity check
-            # Para SQLite, intenta contar si existe la tabla
+            version = db.execute(text("SELECT 1")).scalar()
             try:
                 users_count = db.execute(text("SELECT COUNT(*) FROM users")).scalar()
             except Exception:
                 users_count = None
 
         info = {
-            "settings.DATABASE_URL": settings.DATABASE_URL,
+            "settings.DATABASE_URL": app_settings.DATABASE_URL,
             "engine.url": url_str,
             "dialect": dialect,
             "current_database": current_db,
@@ -131,6 +143,3 @@ def debug_dbinfo():
             "db_version": version,
         }
     return info
-
-
-

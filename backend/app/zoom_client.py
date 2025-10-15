@@ -1,7 +1,23 @@
 # app/zoom_client.py
-from typing import Optional
+from __future__ import annotations
+from typing import Optional, Dict, Any
 import httpx
 from .config import settings
+
+
+def _pretty_zoom_error(resp: httpx.Response) -> str:
+    """
+    Devuelve detalle amigable del error de Zoom con el body JSON (message, code).
+    """
+    try:
+        data = resp.json()
+    except Exception:
+        try:
+            data = {"raw": resp.text}
+        except Exception:
+            data = {"raw": "<no-body>"}
+    return f"{resp.status_code} {resp.reason_phrase} | {data}"
+
 
 class ZoomClient:
     _token: Optional[str] = None
@@ -28,13 +44,31 @@ class ZoomClient:
         token = self._token or await self._get_token()
         return {"Authorization": f"Bearer {token}"}
 
+    # -----------------------
+    # Helpers payload
+    # -----------------------
+    @staticmethod
+    def _payload_start_time(start_time_iso: str, timezone: Optional[str]) -> Dict[str, Any]:
+        """
+        Construye el par (start_time, timezone) para Zoom:
+         - Si viene en UTC con 'Z', NO envía timezone.
+         - Si viene sin 'Z' (ej. con offset -05:00), puede enviar timezone si se proveyó.
+        """
+        payload: Dict[str, Any] = {"start_time": start_time_iso}
+        if not start_time_iso.endswith("Z") and timezone:
+            payload["timezone"] = timezone
+        return payload
+
+    # -----------------------
+    # API Calls
+    # -----------------------
     async def create_meeting(
         self,
         user_id: str,
         topic: str,
-        start_time_iso: str,
+        start_time_iso: str,     # preferimos UTC con 'Z'
         duration_minutes: int,
-        timezone: str = "America/Guayaquil",
+        timezone: Optional[str] = None,   # no se enviará si start_time termina en Z
         waiting_room: bool = True,
         join_before_host: bool = False,
         passcode: Optional[str] = None,
@@ -45,10 +79,7 @@ class ZoomClient:
         payload = {
             "topic": topic,
             "type": 2,  # scheduled
-            "start_time": start_time_iso,  # e.g. 2025-09-11T15:00:00Z
             "duration": duration_minutes,
-            "timezone": timezone,
-            "password": passcode,
             "settings": {
                 "waiting_room": waiting_room,
                 "join_before_host": join_before_host,
@@ -58,38 +89,38 @@ class ZoomClient:
                 "host_video": False,
             },
         }
-        if passcode is None:
-            payload.pop("password")
+        # start_time / timezone según reglas
+        payload.update(self._payload_start_time(start_time_iso, timezone))
+
+        if passcode:
+            payload["password"] = passcode
 
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(url, json=payload, headers=await self._headers())
             if resp.status_code == 401:
                 self._token = None
                 resp = await client.post(url, json=payload, headers=await self._headers())
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                raise RuntimeError(f"zoom.create_meeting: {_pretty_zoom_error(resp)}")
             return resp.json()
 
-    # ✅ NUEVO: actualizar reunión existente
     async def update_meeting(
         self,
         meeting_id: str,
-        start_time_iso: str,
+        start_time_iso: str,      # preferimos UTC con 'Z'
         duration_minutes: int,
-        timezone: str = "America/Guayaquil",
         topic: Optional[str] = None,
+        timezone: Optional[str] = None,   # no se enviará si start_time termina en Z
     ) -> None:
         """
         PATCH /meetings/{meetingId}
-        Se puede actualizar start_time, duration, timezone y opcionalmente topic.
+        Zoom devuelve 204 No Content en éxito.
         """
         api_base = settings.ZOOM_API_BASE.rstrip("/")
         url = f"{api_base}/meetings/{meeting_id}"
 
-        payload = {
-            "start_time": start_time_iso,
-            "duration": duration_minutes,
-            "timezone": timezone,
-        }
+        payload: Dict[str, Any] = {"duration": duration_minutes}
+        payload.update(self._payload_start_time(start_time_iso, timezone))
         if topic:
             payload["topic"] = topic
 
@@ -98,6 +129,21 @@ class ZoomClient:
             if resp.status_code == 401:
                 self._token = None
                 resp = await client.patch(url, json=payload, headers=await self._headers())
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                raise RuntimeError(f"zoom.update_meeting: {_pretty_zoom_error(resp)}")
+            # 204 OK → nada que retornar
+
+    async def get_meeting(self, meeting_id: str) -> dict:
+        api_base = settings.ZOOM_API_BASE.rstrip("/")
+        url = f"{api_base}/meetings/{meeting_id}"
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, headers=await self._headers())
+            if resp.status_code == 401:
+                self._token = None
+                resp = await client.get(url, headers=await self._headers())
+            if resp.status_code >= 400:
+                raise RuntimeError(f"zoom.get_meeting: {_pretty_zoom_error(resp)}")
+            return resp.json()
+
 
 zoom = ZoomClient()

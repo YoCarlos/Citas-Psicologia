@@ -359,6 +359,7 @@ async def reschedule_appt(
     if not appt:
         raise HTTPException(404, "No encontrado")
 
+    # Permisos: paciente dueño o doctor dueño
     if not (
         (current.role == models.UserRole.patient and appt.patient_id == current.id) or
         (current.role == models.UserRole.doctor and appt.doctor_id == current.id)
@@ -375,6 +376,7 @@ async def reschedule_appt(
     if new_e <= new_s:
         raise HTTPException(400, "Rango horario inválido")
 
+    # Conflictos con otras citas
     busy_stmt = (
         select(models.Appointment)
         .where(models.Appointment.doctor_id == appt.doctor_id)
@@ -398,26 +400,55 @@ async def reschedule_appt(
     appt.end_at = new_e
     appt.hold_until = None
 
+    # Si estaba confirmada y hay reunión Zoom → actualizarla
     if appt.status == models.AppointmentStatus.confirmed and appt.zoom_meeting_id:
         try:
-            start_iso = iso_utc_z(new_s)
+            # Usamos UTC con 'Z' y NO enviamos timezone en update.
+            start_iso = iso_utc_z(new_s)  # p.ej. "2025-10-15T20:00:00Z"
             duration = max(1, int((new_e - new_s).total_seconds() // 60))
-            await zoom.update_meeting(
-                meeting_id=appt.zoom_meeting_id,
-                start_time_iso=start_iso,
-                duration_minutes=duration,
-                timezone="America/Guayaquil",
-                topic=f"Cita {appt.id} - Doctor {appt.doctor_id}",
-            )
+
+            try:
+                await zoom.update_meeting(
+                    meeting_id=appt.zoom_meeting_id,
+                    start_time_iso=start_iso,
+                    duration_minutes=duration,
+                    topic=f"Cita {appt.id} - Doctor {appt.doctor_id}",
+                    # timezone=None → omitido a propósito en update cuando hay 'Z'
+                )
+            except RuntimeError as zerr:
+                # Si la reunión no existe (404 / code 3001) → recreamos
+                msg = str(zerr).lower()
+                if "404" in msg or "3001" in msg or "meeting does not exist" in msg:
+                    # recrear reunión
+                    if not settings.ZOOM_DEFAULT_USER:
+                        raise HTTPException(500, "ZOOM_DEFAULT_USER no configurado")
+                    z = await zoom.create_meeting(
+                        user_id=settings.ZOOM_DEFAULT_USER,
+                        topic=f"Cita {appt.id} - Doctor {appt.doctor_id}",
+                        start_time_iso=start_iso,
+                        duration_minutes=duration,
+                        timezone=None,  # usamos UTC → no pasamos timezone
+                        waiting_room=True,
+                        join_before_host=False,
+                    )
+                    appt.zoom_meeting_id = str(z.get("id"))
+                    appt.zoom_join_url = z.get("join_url")
+                else:
+                    # Otro error: aborta
+                    raise
+
         except Exception as ex:
             db.rollback()
             raise HTTPException(502, f"No se pudo actualizar la reunión en Zoom: {ex}")
 
+    # Persistimos
     db.commit()
     db.refresh(appt)
 
+    # Emails de reagendado
     bg.add_task(send_rescheduled_emails, appt, db, old_start, old_end)
 
+    # Reprogramar recordatorio si estaba confirmada
     if appt.status == models.AppointmentStatus.confirmed:
         cancel_reminder_job(appt.id)
         schedule_reminder_job(appt)
