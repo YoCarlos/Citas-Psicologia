@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,7 +24,7 @@ from .db import Base
 
 
 # =========================
-# Enums (únicas definiciones)
+# Enums
 # =========================
 
 class UserRole(str, enum.Enum):
@@ -35,7 +36,7 @@ class AppointmentStatus(str, enum.Enum):
     free = "free"
     pending = "pending"
     confirmed = "confirmed"
-    cancelled = "cancelled"  # si no lo usas, puedes quitarlo
+    cancelled = "cancelled"  # opcional
 
 
 class PaymentMethod(str, enum.Enum):
@@ -87,7 +88,10 @@ class User(Base):
         cascade="all, delete-orphan",
     )
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    # tz-aware y que la ponga la BD
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
+    )
 
 
 class PatientProfile(Base):
@@ -164,11 +168,17 @@ class Appointment(Base):
     __tablename__ = "appointments"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    doctor_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    patient_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True)
 
-    start_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    end_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    doctor_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    patient_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+
+    # guardar siempre en UTC (tz-aware)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     status: Mapped[AppointmentStatus] = mapped_column(
         Enum(AppointmentStatus, name="appointment_status"),
@@ -181,12 +191,16 @@ class Appointment(Base):
         nullable=True,
     )
 
-    hold_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    hold_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     zoom_meeting_id: Mapped[Optional[str]] = mapped_column(String(120))
     zoom_join_url: Mapped[Optional[str]] = mapped_column(String(500))
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
+    )
 
 
 class Payment(Base):
@@ -197,7 +211,6 @@ class Payment(Base):
         ForeignKey("appointments.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    # reutilizamos el MISMO tipo de enum
     method: Mapped[PaymentMethod] = mapped_column(
         Enum(PaymentMethod, name="payment_method"),
         nullable=False,
@@ -205,8 +218,10 @@ class Payment(Base):
     payphone_id: Mapped[Optional[str]] = mapped_column(String(120))
     confirmed_by_doctor: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
+    )
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 # =========================
@@ -219,10 +234,13 @@ class AvailabilitySlot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     doctor_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
 
-    start_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    end_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # UTC tz-aware (el router se encarga de convertir entradas/salidas)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
+    )
 
 
 # =========================
@@ -249,12 +267,11 @@ class AvailabilityRule(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     ranges: Mapped[List[dict]] = mapped_column(JSON, default=list, nullable=False)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        nullable=False,
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 
@@ -276,10 +293,9 @@ class DoctorSettings(Base):
     duration_min: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
     price_usd: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False, default=35.00)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        nullable=False,
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )

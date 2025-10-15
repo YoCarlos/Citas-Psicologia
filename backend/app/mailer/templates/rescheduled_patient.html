@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Tu cita fue reagendada</h1>
+<p>Hola {{ patient_name }}, hemos cambiado la cita #{{ appointment_id }}.</p>
+<p><strong>Antes:</strong> {{ old_start_local }} — {{ old_end_local }} (GMT-5)</p>
+<p><strong>Ahora:</strong> {{ start_local }} — {{ end_local }} (GMT-5)</p>
+{% if join_url %}
+<p><a class="btn" href="{{ join_url }}">Unirse a la reunión</a></p>
+{% endif %}
+<p>Doctora: {{ doctor_name }}</p>
+{% endblock %}

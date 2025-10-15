@@ -4,63 +4,42 @@ import { apiGet, apiPost } from "../../lib/api"
 import { getUserFromToken } from "../../lib/auth"
 import { CalendarClock, Video, RefreshCw, CalendarDays, X, Eye, EyeOff, Filter } from "lucide-react"
 
+// --- Day.js TZ ---
+import dayjs from "dayjs"
+import utc from "dayjs/plugin/utc"
+import timezone from "dayjs/plugin/timezone"
+dayjs.extend(utc)
+dayjs.extend(timezone)
+
 const TZ = "America/Guayaquil"
+dayjs.tz.setDefault(TZ)
 
-// === TZ helpers (GYE) ===
-const parseAsGYE = (iso) => {
-    if (!iso) return null
-    if (iso.includes("Z") || (iso.includes("+") && iso.length > 19)) return new Date(iso)
-    return new Date(`${iso}-05:00`)
-}
-const toLocalYMD = (iso) => {
-    const d = parseAsGYE(iso)
-    const y = d.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
-    const m = d.toLocaleString("en-CA", { month: "2-digit", timeZone: TZ })
-    const day = d.toLocaleString("en-CA", { day: "2-digit", timeZone: TZ })
-    return `${y}-${m}-${day}`
-}
-const toLocalHM = (iso) =>
-    parseAsGYE(iso).toLocaleTimeString("es-EC", {
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-        timeZone: TZ,
-    })
+// === TZ helpers (todo en Ecuador, input ISO UTC del backend) ===
+const dGYE = (iso) => (iso ? dayjs(iso).tz(TZ) : null)               // parse ISO (UTC/Z) -> Ecuador
+const fmtYMD = (iso) => dGYE(iso).format("YYYY-MM-DD")
+const fmtHM = (iso) => dGYE(iso).format("HH:mm")
+const nowGYE = () => dayjs().tz(TZ)
 
-const nowInGYE = () => {
-    const base = new Date()
-    const y = base.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
-    const m = base.toLocaleString("en-CA", { month: "2-digit", timeZone: TZ })
-    const d = base.toLocaleString("en-CA", { day: "2-digit", timeZone: TZ })
-    const hh = base.toLocaleString("en-CA", { hour: "2-digit", hour12: false, timeZone: TZ })
-    const mm = base.toLocaleString("en-CA", { minute: "2-digit", timeZone: TZ })
-    const ss = base.toLocaleString("en-CA", { second: "2-digit", timeZone: TZ })
-    return new Date(`${y}-${m}-${d}T${hh}:${mm}:${ss}-05:00`)
-}
 const canJoinNow = (startISO, endISO) => {
-    const now = nowInGYE()
-    const start = parseAsGYE(startISO)
-    const end = parseAsGYE(endISO)
-    return now >= new Date(start.getTime() - 5 * 60000) && now <= end
+    const now = nowGYE()
+    const start = dGYE(startISO)
+    const end = dGYE(endISO)
+    return now.isAfter(start.subtract(5, "minute")) && now.isBefore(end)
 }
 
 // ==== rangos de filtro (en GYE) ====
-const startOfToday = () => {
-    const n = nowInGYE()
-    return new Date(n.getFullYear(), n.getMonth(), n.getDate())
-}
-const endOfToday = () => new Date(startOfToday().getTime() + 24 * 60 * 60000 - 1)
+const startOfToday = () => nowGYE().startOf("day")
+const endOfToday = () => nowGYE().endOf("day")
 
+// semana lun-dom (Monday-first)
 const startOfWeek = () => {
-    const n = startOfToday()
-    // semana lun-dom en GYE
-    const jsDay = (n.getDay() + 6) % 7 // Mon=0..Sun=6
-    n.setDate(n.getDate() - jsDay)
-    return new Date(n.getFullYear(), n.getMonth(), n.getDate())
+    const t = startOfToday()
+    const jsDow = (t.day() + 6) % 7 // Mon=0..Sun=6
+    return t.subtract(jsDow, "day")
 }
-const endOfWeek = () => new Date(startOfWeek().getTime() + 7 * 24 * 60 * 60000 - 1)
+const endOfWeek = () => startOfWeek().add(6, "day").endOf("day")
 
-const addDays = (d, days) => new Date(d.getTime() + days * 24 * 60 * 60000)
+const addDays = (dj, days) => dj.add(days, "day")
 
 export default function Appointments() {
     const user = getUserFromToken()
@@ -69,6 +48,9 @@ export default function Appointments() {
     const [loading, setLoading] = React.useState(false)
     const [errorMsg, setErrorMsg] = React.useState("")
     const [items, setItems] = React.useState([])
+
+    // nombres de pacientes (cache)
+    const [patientNames, setPatientNames] = React.useState({})
 
     // visibilidad
     const [showPast, setShowPast] = React.useState(false)
@@ -84,6 +66,7 @@ export default function Appointments() {
     const [slotsLoading, setSlotsLoading] = React.useState(false)
     const [modalMsg, setModalMsg] = React.useState("")
 
+    // 1) Cargar citas
     const load = React.useCallback(async () => {
         if (!doctorId) {
             setErrorMsg("No se encontró la doctora autenticada.")
@@ -93,18 +76,19 @@ export default function Appointments() {
         setErrorMsg("")
         try {
             const res = await apiGet(`/appointments?doctor_id=${doctorId}&limit=500`)
-            const now = nowInGYE()
+            const now = nowGYE()
             const mapped = (res || []).map((a) => {
-                const isPast = parseAsGYE(a.end_at) < now
+                const end = dGYE(a.end_at)
+                const isPast = end.isBefore(now)
                 return {
                     ...a,
-                    ymd: toLocalYMD(a.start_at),
-                    time: `${toLocalHM(a.start_at)}–${toLocalHM(a.end_at)}`,
+                    ymd: fmtYMD(a.start_at),
+                    time: `${fmtHM(a.start_at)}–${fmtHM(a.end_at)}`,
                     isPast,
                     canJoin: a.status === "confirmed" && !!a.zoom_join_url && canJoinNow(a.start_at, a.end_at),
                 }
             })
-            mapped.sort((x, y) => new Date(x.start_at) - new Date(y.start_at))
+            mapped.sort((x, y) => dayjs(x.start_at).valueOf() - dayjs(y.start_at).valueOf())
             setItems(mapped)
         } catch (e) {
             setErrorMsg(e?.message || "No se pudieron cargar las citas.")
@@ -117,10 +101,52 @@ export default function Appointments() {
         load()
     }, [load])
 
-    // aplicar filtros
+    // 2) Cargar nombres de pacientes de la doctora (cache inicial)
+    React.useEffect(() => {
+        const loadPatients = async () => {
+            if (!doctorId) return
+            try {
+                const qs = new URLSearchParams({
+                    role: "patient",
+                    doctor_id: String(doctorId),
+                    limit: "500",
+                }).toString()
+                const list = await apiGet(`/users?${qs}`)
+                const arr = Array.isArray(list) ? list : []
+                const names = {}
+                for (const u of arr) names[u.id] = u.name
+                setPatientNames((prev) => ({ ...prev, ...names }))
+            } catch {
+                // silencio (seguimos con resolución on-demand)
+            }
+        }
+        loadPatients()
+    }, [doctorId])
+
+    // 3) Resolver nombres faltantes on-demand si aparecen citas con patient_id sin nombre cacheado
+    React.useEffect(() => {
+        const missing = new Set()
+        for (const a of items) {
+            if (a.patient_id && !patientNames[a.patient_id]) missing.add(a.patient_id)
+        }
+        if (missing.size === 0) return
+
+        const loadMissing = async () => {
+            for (const pid of missing) {
+                try {
+                    const u = await apiGet(`/users/${pid}`)
+                    if (u?.id) setPatientNames((prev) => ({ ...prev, [u.id]: u.name }))
+                } catch {
+                    // silencio
+                }
+            }
+        }
+        loadMissing()
+    }, [items, patientNames])
+
+    // aplicar filtros (en Ecuador)
     const filteredByRange = React.useMemo(() => {
-        if (range === "all") return items
-        if (items.length === 0) return items
+        if (range === "all" || items.length === 0) return items
 
         let from = null
         let to = null
@@ -132,16 +158,15 @@ export default function Appointments() {
             from = startOfWeek()
             to = endOfWeek()
         } else if (range === "next30") {
-            const s = startOfToday()
-            from = s
-            to = addDays(s, 30)
+            from = startOfToday()
+            to = addDays(from, 30).endOf("day")
         }
 
         if (!from || !to) return items
 
         return items.filter((a) => {
-            const start = parseAsGYE(a.start_at)
-            return start >= from && start <= to
+            const start = dGYE(a.start_at)
+            return start.isSame(from) || (start.isAfter(from) && start.isBefore(to)) || start.isSame(to)
         })
     }, [items, range])
 
@@ -151,7 +176,7 @@ export default function Appointments() {
         [filteredByRange, showPast]
     )
 
-    // agrupar por día
+    // agrupar por día (clave YYYY-MM-DD en Ecuador)
     const grouped = React.useMemo(() => {
         const map = {}
         for (const a of visible) {
@@ -159,9 +184,10 @@ export default function Appointments() {
             map[a.ymd].push(a)
         }
         for (const k of Object.keys(map)) {
-            map[k].sort((x, y) => new Date(x.start_at) - new Date(y.start_at))
+            map[k].sort((x, y) => dayjs(x.start_at).valueOf() - dayjs(y.start_at).valueOf())
         }
-        return Object.entries(map).sort((a, b) => new Date(a[0]) - new Date(b[0]))
+        // ordenar días por fecha
+        return Object.entries(map).sort(([a], [b]) => dayjs(a).valueOf() - dayjs(b).valueOf())
     }, [visible])
 
     const statusBadge = (status) => {
@@ -174,15 +200,15 @@ export default function Appointments() {
     // --- Modal Reagendar ---
     const openReschedule = (appt) => {
         setCurrentAppt(appt)
-        setPickDate(toLocalYMD(appt.start_at))
+        setPickDate(fmtYMD(appt.start_at))
         setSlots([])
         setModalMsg("")
         setModalOpen(true)
-        const now = nowInGYE()
-        const start = parseAsGYE(appt.start_at)
-        const locked = (start.getTime() - now.getTime()) / 36e5 < 4
+        const now = nowGYE()
+        const start = dGYE(appt.start_at)
+        const locked = start.diff(now, "hour", true) < 4
         if (!locked) {
-            setTimeout(() => fetchSlotsForDay(toLocalYMD(appt.start_at)), 0)
+            setTimeout(() => fetchSlotsForDay(fmtYMD(appt.start_at)), 0)
         }
     }
 
@@ -191,15 +217,17 @@ export default function Appointments() {
         setSlotsLoading(true)
         setModalMsg("")
         try {
-            const from = new Date(`${ymd}T00:00:00-05:00`).toISOString()
-            const to = new Date(`${ymd}T23:59:59-05:00`).toISOString()
+            // Construye el rango del día en Ecuador y envía en ISO (UTC) al backend
+            const fromISO = dayjs.tz(`${ymd} 00:00`, TZ).toISOString()
+            const toISO = dayjs.tz(`${ymd} 23:59:59.999`, TZ).toISOString()
+
             const qs = new URLSearchParams({
                 doctor_id: String(doctorId),
-                date_from: from,
-                date_to: to,
+                date_from: fromISO,
+                date_to: toISO,
             }).toString()
             const res = await apiGet(`/availability/slots?${qs}`)
-            const sorted = (res || []).sort((a, b) => new Date(a.start_at) - new Date(b.start_at))
+            const sorted = (res || []).sort((a, b) => dayjs(a.start_at).valueOf() - dayjs(b.start_at).valueOf())
             setSlots(sorted)
             if (sorted.length === 0) setModalMsg("No hay horarios disponibles para esta fecha.")
         } catch (e) {
@@ -215,25 +243,25 @@ export default function Appointments() {
         setSlots([])
         setModalMsg("")
         if (!currentAppt) return
-        const now = nowInGYE()
-        const start = parseAsGYE(currentAppt.start_at)
-        const locked = (start.getTime() - now.getTime()) / 36e5 < 4
+        const now = nowGYE()
+        const start = dGYE(currentAppt.start_at)
+        const locked = start.diff(now, "hour", true) < 4
         if (!locked && ymd) fetchSlotsForDay(ymd)
     }
 
     const tryReschedule = async (slot) => {
         if (!currentAppt) return
         setModalMsg("")
-        const now = nowInGYE()
-        const start = parseAsGYE(currentAppt.start_at)
-        const locked = (start.getTime() - now.getTime()) / 36e5 < 4
+        const now = nowGYE()
+        const start = dGYE(currentAppt.start_at)
+        const locked = start.diff(now, "hour", true) < 4
         if (locked) {
             setModalMsg("No es posible reagendar: faltan menos de 4 horas para el inicio de la cita.")
             return
         }
         try {
             await apiPost(`/appointments/${currentAppt.id}/reschedule`, {
-                start_at: slot.start_at,
+                start_at: slot.start_at, // ya vienen en ISO UTC del backend
                 end_at: slot.end_at,
             })
             setModalMsg("¡Listo! La cita fue reagendada correctamente.")
@@ -329,42 +357,45 @@ export default function Appointments() {
                                     <span className="text-xs text-gray-500">{appts.length} cita(s)</span>
                                 </div>
                                 <div className="divide-y">
-                                    {appts.map((a) => (
-                                        <div key={a.id} className="px-4 py-3 flex items-center justify-between">
-                                            <div className="flex items-center gap-6">
-                                                <div className="font-mono tabular-nums text-blue-700">{a.time}</div>
-                                                <div className="text-sm">
-                                                    <div className="font-medium">
-                                                        {a.patient_id ? `Paciente #${a.patient_id}` : <span className="text-gray-400">Sin asignar</span>}
-                                                    </div>
-                                                    <div className="mt-0.5">
-                                                        <span className={`text-xs px-2 py-1 rounded-full ${statusBadge(a.status)}`}>{a.status}</span>
+                                    {appts.map((a) => {
+                                        const name = a.patient_id
+                                            ? (patientNames[a.patient_id] ?? "Cargando…")
+                                            : "Sin asignar"
+                                        return (
+                                            <div key={a.id} className="px-4 py-3 flex items-center justify-between">
+                                                <div className="flex items-center gap-6">
+                                                    <div className="font-mono tabular-nums text-blue-700">{a.time}</div>
+                                                    <div className="text-sm">
+                                                        <div className="font-medium">{name}</div>
+                                                        <div className="mt-0.5">
+                                                            <span className={`text-xs px-2 py-1 rounded-full ${statusBadge(a.status)}`}>{a.status}</span>
+                                                        </div>
                                                     </div>
                                                 </div>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <button
+                                                        className="px-3 py-1.5 rounded-lg border text-gray-700 hover:bg-gray-50 text-sm inline-flex items-center gap-2"
+                                                        onClick={() => openReschedule(a)}
+                                                    >
+                                                        <CalendarDays className="h-4 w-4" /> Reagendar
+                                                    </button>
+                                                    <button
+                                                        className={[
+                                                            "px-3 py-1.5 rounded-lg text-sm inline-flex items-center gap-2",
+                                                            a.canJoin
+                                                                ? "bg-blue-700 text-white hover:bg-blue-800"
+                                                                : "bg-gray-200 text-gray-500 cursor-not-allowed",
+                                                        ].join(" ")}
+                                                        disabled={!a.canJoin}
+                                                        onClick={() => onJoin(a)}
+                                                        title={a.canJoin ? "Unirse a la sesión" : "Disponible 5 min antes (si está confirmada)"}
+                                                    >
+                                                        <Video className="h-4 w-4" /> Unirse
+                                                    </button>
+                                                </div>
                                             </div>
-                                            <div className="flex flex-wrap items-center gap-2">
-                                                <button
-                                                    className="px-3 py-1.5 rounded-lg border text-gray-700 hover:bg-gray-50 text-sm inline-flex items-center gap-2"
-                                                    onClick={() => openReschedule(a)}
-                                                >
-                                                    <CalendarDays className="h-4 w-4" /> Reagendar
-                                                </button>
-                                                <button
-                                                    className={[
-                                                        "px-3 py-1.5 rounded-lg text-sm inline-flex items-center gap-2",
-                                                        a.canJoin
-                                                            ? "bg-blue-700 text-white hover:bg-blue-800"
-                                                            : "bg-gray-200 text-gray-500 cursor-not-allowed",
-                                                    ].join(" ")}
-                                                    disabled={!a.canJoin}
-                                                    onClick={() => onJoin(a)}
-                                                    title={a.canJoin ? "Unirse a la sesión" : "Disponible 5 min antes (si está confirmada)"}
-                                                >
-                                                    <Video className="h-4 w-4" /> Unirse
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ))}
+                                        )
+                                    })}
                                 </div>
                             </div>
                         ))}
@@ -383,7 +414,7 @@ export default function Appointments() {
                                     <p className="text-xs text-gray-500">
                                         Actual:{" "}
                                         <span className="font-mono text-blue-700">
-                                            {toLocalYMD(currentAppt.start_at)} · {toLocalHM(currentAppt.start_at)}–{toLocalHM(currentAppt.end_at)}
+                                            {fmtYMD(currentAppt.start_at)} · {fmtHM(currentAppt.start_at)}–{fmtHM(currentAppt.end_at)}
                                         </span>
                                     </p>
                                 )}
@@ -395,9 +426,9 @@ export default function Appointments() {
 
                         <div className="p-4 space-y-4">
                             {currentAppt && (() => {
-                                const now = nowInGYE()
-                                const start = parseAsGYE(currentAppt.start_at)
-                                const locked = (start.getTime() - now.getTime()) / 36e5 < 4
+                                const now = nowGYE()
+                                const start = dGYE(currentAppt.start_at)
+                                const locked = start.diff(now, "hour", true) < 4
 
                                 if (locked) {
                                     return (
@@ -435,7 +466,7 @@ export default function Appointments() {
                                                                     onClick={() => tryReschedule(s)}
                                                                     title="Elegir este horario"
                                                                 >
-                                                                    {toLocalHM(s.start_at)}–{toLocalHM(s.end_at)}
+                                                                    {fmtHM(s.start_at)}–{fmtHM(s.end_at)}
                                                                 </button>
                                                             ))}
                                                         </div>

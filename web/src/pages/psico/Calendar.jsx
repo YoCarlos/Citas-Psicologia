@@ -3,44 +3,29 @@ import React from "react"
 import { apiGet, apiPost } from "../../lib/api"
 import { getUserFromToken } from "../../lib/auth"
 
+// --- Day.js con TZ Ecuador ---
+import dayjs from "dayjs"
+import utc from "dayjs/plugin/utc"
+import timezone from "dayjs/plugin/timezone"
+import "dayjs/locale/es"
+
+dayjs.extend(utc)
+dayjs.extend(timezone)
+dayjs.locale("es")
+
 const TZ = "America/Guayaquil"
+dayjs.tz.setDefault(TZ)
 
-// ---------- helpers ----------
-const ensureUTCString = (s) =>
-    typeof s === "string" && (s.endsWith("Z") || s.includes("+")) ? s : `${s}Z`
-const parseAsUTC = (s) => new Date(ensureUTCString(s))
+// ---------- helpers (todo en Ecuador) ----------
+const dGYE = (iso) => (iso ? dayjs(iso).tz(TZ) : null)           // ISO UTC -> Ecuador
+const fmtYMD = (iso) => dGYE(iso).format("YYYY-MM-DD")
+const fmtHM = (iso) => dGYE(iso).format("HH:mm")
 
-const toLocalYMD = (iso) => {
-    const d = new Date(iso)
-    const y = d.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
-    const m = d.toLocaleString("en-CA", { month: "2-digit", timeZone: TZ })
-    const day = d.toLocaleString("en-CA", { day: "2-digit", timeZone: TZ })
-    return `${y}-${m}-${day}`
-}
-const toLocalHM = (iso) =>
-    new Date(iso).toLocaleTimeString("es-EC", {
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-        timeZone: TZ,
-    })
-
-const monthKeyOf = (iso) => {
-    const d = new Date(iso)
-    const y = d.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
-    const m = d.toLocaleString("en-CA", { month: "2-digit", timeZone: TZ })
-    return `${y}-${m}` // e.g. 2025-09
-}
-const monthLabel = (key) => {
-    const [y, m] = key.split("-").map(Number)
-    const d = new Date(Date.UTC(y, m - 1, 1))
-    return d.toLocaleString("es-EC", { month: "long", year: "numeric", timeZone: TZ })
-}
+const monthKeyOf = (iso) => dGYE(iso).format("YYYY-MM")          // p.ej. 2025-09
+const monthLabel = (key) => dayjs.tz(`${key}-01`, TZ).format("MMMM YYYY")
 
 const statusBadge = (st) =>
-    st === "confirmed"
-        ? "bg-emerald-100 text-emerald-700"
-        : "bg-yellow-100 text-yellow-800"
+    st === "confirmed" ? "bg-emerald-100 text-emerald-700" : "bg-yellow-100 text-yellow-800"
 
 export default function Calendar() {
     const user = getUserFromToken()
@@ -66,9 +51,9 @@ export default function Calendar() {
                 const list = await apiGet(`/appointments?${qs}`)
                 const all = Array.isArray(list) ? list : []
 
-                const now = new Date()
-                const future = all.filter((a) => parseAsUTC(a.end_at) > now)
-                future.sort((a, b) => parseAsUTC(a.start_at) - parseAsUTC(b.start_at))
+                const now = dayjs() // ahora (no hace falta TZ para comparar con ISO Z)
+                const future = all.filter((a) => dayjs(a.end_at).isAfter(now))
+                future.sort((a, b) => dayjs(a.start_at).valueOf() - dayjs(b.start_at).valueOf())
                 setAppts(future)
             } catch (e) {
                 setErrorMsg(e?.message || "No se pudo cargar el calendario.")
@@ -94,7 +79,9 @@ export default function Calendar() {
                 const names = {}
                 for (const u of arr) names[u.id] = u.name
                 setPatientNames((prev) => ({ ...prev, ...names }))
-            } catch { }
+            } catch {
+                // silencio
+            }
         }
         loadPatients()
     }, [doctorId])
@@ -111,18 +98,20 @@ export default function Calendar() {
                 try {
                     const u = await apiGet(`/users/${pid}`)
                     if (u?.id) setPatientNames((prev) => ({ ...prev, [u.id]: u.name }))
-                } catch { }
+                } catch {
+                    // silencio
+                }
             }
         }
         loadMissing()
     }, [appts, patientNames])
 
-    // ✅ FIX: construir por mes usando la variable local 'byMonth'
+    // Agrupar por mes/día en hora de Ecuador
     const groupedByMonth = React.useMemo(() => {
         const byMonth = {}
         for (const a of appts) {
-            const mk = monthKeyOf(a.start_at)
-            const ymd = toLocalYMD(a.start_at)
+            const mk = monthKeyOf(a.start_at)      // YYYY-MM en GYE
+            const ymd = fmtYMD(a.start_at)         // YYYY-MM-DD en GYE
             byMonth[mk] ??= {}
             byMonth[mk][ymd] ??= []
             byMonth[mk][ymd].push(a)
@@ -131,16 +120,13 @@ export default function Calendar() {
         for (const mk of Object.keys(byMonth)) {
             const days = byMonth[mk]
             for (const d of Object.keys(days)) {
-                days[d].sort((x, y) => parseAsUTC(x.start_at) - parseAsUTC(y.start_at))
+                days[d].sort((x, y) => dayjs(x.start_at).valueOf() - dayjs(y.start_at).valueOf())
             }
         }
         return byMonth
     }, [appts])
 
-    const monthKeys = React.useMemo(
-        () => Object.keys(groupedByMonth).sort(),
-        [groupedByMonth]
-    )
+    const monthKeys = React.useMemo(() => Object.keys(groupedByMonth).sort(), [groupedByMonth])
 
     const confirmOne = async (a) => {
         setConfirmingId(a.id)
@@ -205,7 +191,7 @@ export default function Calendar() {
                                                         >
                                                             <div>
                                                                 <div className="font-medium">
-                                                                    {toLocalHM(a.start_at)} — {name}
+                                                                    {fmtHM(a.start_at)} — {name}
                                                                 </div>
                                                                 <div className="text-xs text-gray-500">
                                                                     #{a.id} • {a.method === "payphone" ? "Online" : "Sesión"}

@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
-
+from .scheduler import start_scheduler, shutdown_scheduler
 from .db import SessionLocal  # engine/Base no se usan aquí (migramos con Alembic)
 from .config import settings
 
@@ -18,6 +18,8 @@ from .routers import (
     availability,
     zoom_test,
     settings,
+    debug_email,
+    debug_scheduler,
 )
 
 app = FastAPI(
@@ -26,6 +28,14 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+@app.on_event("startup")
+async def _startup():
+    start_scheduler()
+
+@app.on_event("shutdown")
+async def _shutdown():
+    shutdown_scheduler()
 
 # --- CORS ---
 app.add_middleware(
@@ -50,7 +60,8 @@ app.include_router(payments.router)
 app.include_router(availability.router)
 app.include_router(zoom_test.router)
 app.include_router(settings.router)
-
+app.include_router(debug_email.router)
+app.include_router(debug_scheduler.router)
 # --- Healthchecks ---
 @app.get("/")
 def root():

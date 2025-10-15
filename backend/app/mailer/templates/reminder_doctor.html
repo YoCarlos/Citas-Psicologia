@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+
+<body>
+    <p>Hola {{ doctor_name }},</p>
+    <p>Recordatorio: la cita #{{ appointment_id }} con {{ patient_name }} es en ~1 hora.</p>
+    <p><b>Fecha y hora:</b> {{ start_local }} — {{ end_local }} (GMT-5)</p>
+    {% if join_url %}
+    <p><a href="{{ join_url }}">Unirse a la reunión</a></p>
+    {% endif %}
+    <hr>
+    <small>Enviado por CitasPsico{% if env %} ({{ env }}){% endif %}.</small>
+</body>
+
+</html>

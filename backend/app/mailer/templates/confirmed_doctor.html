@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Cita confirmada</h1>
+<p>Hola {{ doctor_name }}, la cita #{{ appointment_id }} quedó confirmada.</p>
+<p><strong>Paciente:</strong> {{ patient_name }}</p>
+<p><strong>Fecha y hora:</strong> {{ start_local }} — {{ end_local }} (GMT-5)</p>
+{% if join_url %}
+<p><a class="btn" href="{{ join_url }}">Ver enlace de reunión</a></p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ title or "Prueba de envío" }}</h1>
+<p>Hola {{ name or "Usuario" }}, este es un correo de prueba.</p>
+<p>Si ves este mensaje en MailHog, el SMTP local funciona.</p>
+{% if action_url %}
+<p><a class="btn" href="{{ action_url }}">Abrir enlace de ejemplo</a></p>
+{% endif %}
+{% endblock %}
