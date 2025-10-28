@@ -4,7 +4,6 @@ import { Save, Pencil, X } from "lucide-react"
 import { apiGet, apiPost, apiPut } from "../../lib/api"
 
 function fieldClass(disabled) {
-    // Bordes de color cuando se edita; estilo más tenue cuando está en lectura
     return [
         "mt-1 w-full rounded-lg",
         disabled
@@ -27,7 +26,7 @@ export default function ClinicalHistory() {
     // Edición / lectura
     const [isEditing, setIsEditing] = React.useState(false)
 
-    // Formulario y referencia a valores iniciales para detectar cambios
+    // === FORM ===
     const emptyForm = {
         antecedentesPersonales: "",
         antecedentesFamiliares: "",
@@ -36,6 +35,7 @@ export default function ClinicalHistory() {
         diagnosticosPrevios: "",
         consumo: "",
         antecedentesPsico: "",
+        factoresProtectores: "",     // ✅ nuevo campo en el form
         notas: "",
     }
 
@@ -46,8 +46,7 @@ export default function ClinicalHistory() {
 
     // Detectar si hay cambios
     const isDirty = React.useMemo(
-        () =>
-            Object.keys(form).some((k) => (form[k] || "") !== (initialForm[k] || "")),
+        () => Object.keys(form).some((k) => (form[k] || "") !== (initialForm[k] || "")),
         [form, initialForm]
     )
 
@@ -80,6 +79,7 @@ export default function ClinicalHistory() {
                         diagnosticosPrevios: exists.diagnosticos_previos ?? "",
                         consumo: exists.consumo ?? "",
                         antecedentesPsico: exists.antecedentes_psico ?? "",
+                        factoresProtectores: exists.factores_protectores ?? "", // ✅ cargar del backend
                         notas: exists.notas ?? "",
                     }
                     setForm(filled)
@@ -132,6 +132,7 @@ export default function ClinicalHistory() {
             diagnosticos_previos: form.diagnosticosPrevios || null,
             consumo: form.consumo || null,
             antecedentes_psico: form.antecedentesPsico || null,
+            factores_protectores: form.factoresProtectores || null, // ✅ enviar al backend
             notas: form.notas || null,
         }
 
@@ -143,7 +144,7 @@ export default function ClinicalHistory() {
                 saved = await apiPost(`/clinical_histories`, payload)
             }
 
-            // Refresca estados
+            // Refresca estados con lo que devuelve el backend
             setHistory(saved)
             const canonical = {
                 antecedentesPersonales: saved.antecedentes_personales ?? "",
@@ -153,6 +154,7 @@ export default function ClinicalHistory() {
                 diagnosticosPrevios: saved.diagnosticos_previos ?? "",
                 consumo: saved.consumo ?? "",
                 antecedentesPsico: saved.antecedentes_psico ?? "",
+                factoresProtectores: saved.factores_protectores ?? "", // ✅ refrescar del backend
                 notas: saved.notas ?? "",
             }
             setForm(canonical)
@@ -230,6 +232,7 @@ export default function ClinicalHistory() {
                         ["diagnosticosPrevios", "Diagnósticos previos"],
                         ["consumo", "Consumo (tabaco, alcohol, otras)"],
                         ["antecedentesPsico", "Antecedentes psicológicos/psiquiátricos"],
+                        ["factoresProtectores", "Factores protectores"], // ✅ nuevo textarea visible
                         ["notas", "Notas adicionales"],
                     ].map(([name, label]) => (
                         <div key={name}>
@@ -258,7 +261,7 @@ export default function ClinicalHistory() {
                             type="submit"
                             disabled={!isEditing || !isDirty}
                             className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-white transition
-                ${!isEditing || !isDirty
+                                ${!isEditing || !isDirty
                                     ? "bg-slate-300 cursor-not-allowed"
                                     : "bg-emerald-600 hover:bg-emerald-700"
                                 }`}

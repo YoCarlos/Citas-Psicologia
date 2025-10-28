@@ -22,6 +22,7 @@ from .routers import (
     debug_email,
     debug_scheduler,
     jobs,  
+    blocks,
 )
 
 app = FastAPI(
@@ -74,6 +75,7 @@ app.include_router(settings_router.router)  # ✅ router settings renombrado
 app.include_router(debug_email.router)
 app.include_router(debug_scheduler.router)
 app.include_router(jobs.router)  # ✅ añadido aquí
+app.include_router(blocks.router)  
 
 # =========================
 # Healthchecks y debug

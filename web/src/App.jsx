@@ -18,7 +18,8 @@ import PsicoSettings from "./pages/psico/Settings.jsx"
 import RegisterPatient from "./pages/psico/RegisterPatient.jsx"
 import ClinicalHistory from "./pages/psico/ClinicalHistory.jsx"
 import TherapeuticPlan from "./pages/psico/TherapeuticPlan.jsx"
-
+import BlocksPage from "./pages/psico/BlocksPage.jsx"
+import CreateAppointmentSchedule from "./pages/psico/CreateAppointmentSchedule.jsx"
 // Paciente
 import PatientLayout from "./layouts/PatientLayout.jsx"
 import PatientSchedule from "./pages/patient/Schedule.jsx"
@@ -48,6 +49,8 @@ export default function App() {
           <Route path="pacientes" element={<PsicoPatients />} />
           <Route path="citas" element={<PsicoAppointments />} />
           <Route path="calendario" element={<PsicoCalendar />} />
+          <Route path="agendar" element={<CreateAppointmentSchedule />} />
+          <Route path="bloquear" element={<BlocksPage />} />
           <Route path="configuracion" element={<PsicoSettings />} />
           <Route path="pacientes/registrar" element={<RegisterPatient />} />
           <Route path="pacientes/:id/historia" element={<ClinicalHistory />} />

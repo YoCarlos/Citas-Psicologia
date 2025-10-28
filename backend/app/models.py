@@ -1,6 +1,6 @@
 # app/models.py
 import enum
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import List, Optional
 
 from sqlalchemy import (
@@ -131,6 +131,7 @@ class ClinicalHistory(Base):
     consumo: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     antecedentes_psico: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     notas: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    factores_protectores: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -360,3 +361,26 @@ class ReminderJob(Base):
 
     def __repr__(self) -> str:
         return f"<ReminderJob id={self.id} appt={self.appointment_id} status={self.status.value}>"
+    
+    # --- Bloqueos de agenda (unavailability) ---
+class CalendarBlock(Base):
+    __tablename__ = "calendar_blocks"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    doctor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+
+    # Guardamos SIEMPRE en UTC
+    start_at: Mapped[datetime] = mapped_column(nullable=False)
+    end_at:   Mapped[datetime] = mapped_column(nullable=False)
+
+    # Opcional: marcar si es "todo el día" (conveniente para UI)
+    all_day:  Mapped[bool] = mapped_column(default=False)
+
+    # Opcional: motivo/nota
+    reason:   Mapped[Optional[str]] = mapped_column(default=None)
+
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+
+    doctor: Mapped["User"] = relationship(foreign_keys=[doctor_id])
+    creator: Mapped["User"] = relationship(foreign_keys=[created_by])

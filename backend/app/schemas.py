@@ -83,6 +83,9 @@ class ClinicalHistoryBase(BaseModel):
     diagnosis: Optional[str] = Field(default=None, alias="diagnosis")
     psych_history: Optional[str] = Field(default=None, alias="psych_history")
 
+    factores_protectores: Optional[str] = None
+    protective_factors: Optional[str] = Field(default=None, alias="protective_factors")
+
     def canonical_dict(self) -> dict:
         """
         Devuelve un dict SOLO con las claves canónicas, combinando alias si llegaron.
@@ -96,6 +99,8 @@ class ClinicalHistoryBase(BaseModel):
             "consumo": self.consumo,
             "antecedentes_psico": self.antecedentes_psico or self.psych_history,
             "notas": self.notas,
+            "factores_protectores": self.factores_protectores or self.protective_factors,
+            
         }
 
 class ClinicalHistoryCreate(ClinicalHistoryBase):
@@ -116,6 +121,7 @@ class ClinicalHistoryOut(BaseModel):
     consumo: Optional[str] = None
     antecedentes_psico: Optional[str] = None
     notas: Optional[str] = None
+    factores_protectores: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -341,3 +347,34 @@ class ReminderJobOut(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CalendarBlockBase(BaseModel):
+    doctor_id: int
+    start_at: datetime
+    end_at: datetime
+    all_day: bool = False
+    reason: str | None = None
+
+    @field_validator("end_at")
+    @classmethod
+    def _check_range(cls, v, info):
+        # start_at se valida contra end_at en el create/update
+        return v
+
+class CalendarBlockCreate(CalendarBlockBase):
+    pass
+
+class CalendarBlockUpdate(BaseModel):
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    all_day: bool | None = None
+    reason: str | None = None
+
+class CalendarBlockOut(CalendarBlockBase):
+    id: int
+    created_by: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

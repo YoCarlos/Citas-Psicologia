@@ -9,10 +9,10 @@ from ..db import get_db
 from .. import models, schemas
 from ..security import require_role
 from ..utils.tz import (
-    TZ_EC,                      
-    to_utc,                    
-    aware_to_local_naive,       
-    local_naive_to_aware_utc,   
+    TZ_EC,                       # zona base América/Guayaquil
+    to_utc,                      # datetime -> aware UTC
+    aware_to_local_naive,        # aware UTC -> naive local (Ecuador)
+    local_naive_to_aware_utc,    # naive local (Ecuador) -> aware UTC
 )
 
 router = APIRouter(prefix="/availability", tags=["availability"])
@@ -203,7 +203,7 @@ def reset_weekly_rules(
 
 
 # ==========================
-# 3) ENDPOINT: CÁLCULO DE SLOTS DISPONIBLES (reglas + citas ocupadas)
+# 3) ENDPOINT: CÁLCULO DE SLOTS DISPONIBLES (reglas + citas ocupadas + BLOQUEOS)
 # ==========================
 
 def _overlaps(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime) -> bool:
@@ -249,8 +249,7 @@ def get_available_slots(
     if not rule_by_weekday:
         return []
 
-    # 4) Traer citas ocupadas en el rango (SQL y campos en UTC aware),
-    #    luego convertir cada cita a LOCAL naive para comparar con slots locales.
+    # 4) Traer citas ocupadas (UTC aware) y convertir a LOCAL naive
     now_utc = datetime.now(timezone.utc)
 
     busy_stmt = (
@@ -279,7 +278,26 @@ def get_available_slots(
         for a in busy_appts
     ]
 
-    # 5) Construir slots desde reglas (todo en LOCAL naive)
+    # 5) Traer BLOQUEOS (CalendarBlock) que cruzan el rango y convertir a LOCAL naive
+    blocks_stmt = (
+        select(models.CalendarBlock)
+        .where(models.CalendarBlock.doctor_id == doctor_id)
+        .where(models.CalendarBlock.start_at < dt_aware)
+        .where(models.CalendarBlock.end_at > df_aware)
+    )
+    blocks = list(db.scalars(blocks_stmt))
+    block_intervals_local = [
+        (
+            aware_to_local_naive(to_utc(b.start_at)),
+            aware_to_local_naive(to_utc(b.end_at)),
+        )
+        for b in blocks
+    ]
+
+    # 6) “Ahora” local para descartar slots en el pasado
+    now_local = aware_to_local_naive(now_utc)
+
+    # 7) Construir slots desde reglas (todo en LOCAL naive) y filtrar contra citas y bloqueos
     results: list[schemas.AvailableSlotOut] = []
 
     day = df_local.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -305,12 +323,24 @@ def get_available_slots(
                     s_local = cur
                     e_local = cur + step
 
-                    # Conflicto contra appointments (todos LOCAL naive)
+                    # 7.1 Saltar slots en el pasado
+                    if e_local <= now_local:
+                        cur = e_local
+                        continue
+
+                    # 7.2 Conflicto contra appointments
                     conflict = False
                     for b_s, b_e in busy_intervals_local:
                         if _overlaps(s_local, e_local, b_s, b_e):
                             conflict = True
                             break
+
+                    # 7.3 Conflicto contra BLOQUEOS
+                    if not conflict:
+                        for bl_s, bl_e in block_intervals_local:
+                            if _overlaps(s_local, e_local, bl_s, bl_e):
+                                conflict = True
+                                break
 
                     if not conflict:
                         # Responder como UTC aware para que el front muestre Ecuador

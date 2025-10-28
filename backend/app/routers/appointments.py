@@ -21,6 +21,7 @@ router = APIRouter(prefix="/appointments", tags=["appointments"])
 # --- Constantes ---
 BLOCKING_STATES = ["pending", "confirmed"]
 
+
 # --- Helper: solape en UTC ---
 def overlaps_utc(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime) -> bool:
     """
@@ -29,6 +30,57 @@ def overlaps_utc(a_start: datetime, a_end: datetime, b_start: datetime, b_end: d
     a_start = to_utc(a_start); a_end = to_utc(a_end)
     b_start = to_utc(b_start); b_end = to_utc(b_end)
     return (a_start < b_end) and (a_end > b_start)
+
+
+def has_conflict_or_block(
+    db: Session,
+    *,
+    doctor_id: int,
+    start_utc: datetime,
+    end_utc: datetime,
+    exclude_appt_id: Optional[int] = None,
+) -> bool:
+    """
+    Devuelve True si el intervalo [start_utc, end_utc) entra en conflicto con:
+      - Citas confirmed
+      - Citas pending con hold vigente (hold_until NULL o > ahora)
+      - Bloqueos (CalendarBlock)
+    """
+    now_utc = datetime.now(timezone.utc)
+
+    appt_stmt = (
+        select(models.Appointment.id)
+        .where(models.Appointment.doctor_id == doctor_id)
+        .where(models.Appointment.start_at < end_utc)
+        .where(models.Appointment.end_at > start_utc)
+        .where(
+            or_(
+                models.Appointment.status == models.AppointmentStatus.confirmed,
+                and_(
+                    models.Appointment.status == models.AppointmentStatus.pending,
+                    or_(
+                        models.Appointment.hold_until == None,  # noqa: E711
+                        models.Appointment.hold_until > now_utc,
+                    )
+                )
+            )
+        )
+    )
+    if exclude_appt_id:
+        appt_stmt = appt_stmt.where(models.Appointment.id != exclude_appt_id)
+
+    appt_conflict_id = db.scalar(appt_stmt)
+    if appt_conflict_id:
+        return True
+
+    block_stmt = (
+        select(models.CalendarBlock.id)
+        .where(models.CalendarBlock.doctor_id == doctor_id)
+        .where(models.CalendarBlock.start_at < end_utc)
+        .where(models.CalendarBlock.end_at > start_utc)
+    )
+    block_conflict_id = db.scalar(block_stmt)
+    return bool(block_conflict_id)
 
 
 # --- CRUD básico (doctor) ---
@@ -42,36 +94,71 @@ async def create_appt(
     payload: schemas.AppointmentCreate,
     bg: BackgroundTasks,
     db: Session = Depends(get_db),
+    current = Depends(get_current_user),   # ⬅️ para validar propietaria
 ):
+    """
+    Reglas:
+    - Si el usuario autenticado es doctora y envía patient_id, la cita se crea como confirmed (no pending).
+    - Chequear conflictos (solapes) contra citas y bloqueos (CalendarBlock).
+    - No permitir pasado.
+    - Forzar que la doctora solo cree para sí misma (payload.doctor_id == current.id).
+    """
+
+    # --- Validaciones de doctor/paciente ---
     doc = db.get(models.User, payload.doctor_id)
     if not doc or doc.role != models.UserRole.doctor:
         raise HTTPException(status_code=400, detail="doctor_id inválido")
+
+    # ✅ La doctora solo puede crear en su propia agenda
+    if current.role == models.UserRole.doctor and current.id != payload.doctor_id:
+        raise HTTPException(status_code=403, detail="No puedes crear citas para otra doctora")
+
+    pat = None
     if payload.patient_id:
         pat = db.get(models.User, payload.patient_id)
         if not pat or pat.role != models.UserRole.patient:
             raise HTTPException(status_code=400, detail="patient_id inválido (debe ser paciente)")
 
+    # --- Normalización TZ y rangos ---
     s = to_utc(payload.start_at)
     e = to_utc(payload.end_at)
     if e <= s:
         raise HTTPException(status_code=400, detail="Rango horario inválido")
 
-    # Normalizar status y método
-    try:
-        status_in = models.AppointmentStatus(payload.status or "free")
-    except Exception:
-        raise HTTPException(status_code=400, detail="status inválido (free|pending|confirmed)")
+    now_utc = datetime.now(timezone.utc)
+    if s <= now_utc:
+        raise HTTPException(status_code=400, detail="No puedes crear una cita en el pasado")
 
-    method_in = None
-    if payload.method:
+    # --- Si la doctora crea para un paciente → status confirmado forzado ---
+    doctor_crea_para_paciente = (pat is not None)
+    if doctor_crea_para_paciente:
+        status_in = models.AppointmentStatus.confirmed
+        # Método por defecto para creaciones manuales de la doctora (ajústalo a tu negocio)
         try:
-            method_in = models.PaymentMethod(payload.method)
+            method_in = models.PaymentMethod(payload.method) if payload.method else models.PaymentMethod.manual
         except Exception:
             raise HTTPException(status_code=400, detail="method inválido")
+    else:
+        # Permite publicar disponibilidad "free" (si lo usas)
+        try:
+            status_in = models.AppointmentStatus(payload.status or "free")
+        except Exception:
+            raise HTTPException(status_code=400, detail="status inválido (free|pending|confirmed)")
+        method_in = None
+        if payload.method:
+            try:
+                method_in = models.PaymentMethod(payload.method)
+            except Exception:
+                raise HTTPException(status_code=400, detail="method inválido")
 
+    # --- Conflictos contra citas y BLOQUEOS ---
+    if has_conflict_or_block(db, doctor_id=payload.doctor_id, start_utc=s, end_utc=e):
+        raise HTTPException(status_code=409, detail="Ese horario ya está ocupado o bloqueado")
+
+    # --- Crear cita ---
     appt = models.Appointment(
         doctor_id=payload.doctor_id,
-        patient_id=payload.patient_id,
+        patient_id=payload.patient_id,  # puede ser None si publicas "free"
         start_at=s,
         end_at=e,
         status=status_in,
@@ -81,7 +168,7 @@ async def create_appt(
     db.commit()
     db.refresh(appt)
 
-    # Si ya viene confirmada, crear la reunión de Zoom de una vez
+    # --- Si queda confirmada, crear Zoom + emails + recordatorio ---
     if appt.status == models.AppointmentStatus.confirmed:
         if not settings.ZOOM_DEFAULT_USER:
             raise HTTPException(500, detail="ZOOM_DEFAULT_USER no configurado")
@@ -104,6 +191,7 @@ async def create_appt(
             db.commit()
             db.refresh(appt)
         except Exception as ex:
+            # Mantén la coherencia con confirm(): devolvemos 502 si falla Zoom
             raise HTTPException(status_code=502, detail=f"No se pudo crear reunión Zoom: {ex}")
 
         # Notificar y programar recordatorio
@@ -206,6 +294,7 @@ def hold_appointments(
     requested_min = min(to_utc(s.start_at) for s in payload.slots)
     requested_max = max(to_utc(s.end_at) for s in payload.slots)
 
+    # Trae intersecciones existentes (appointments activos) UNA SOLA VEZ
     existing = list(
         db.scalars(
             select(models.Appointment).where(
@@ -214,6 +303,18 @@ def hold_appointments(
                     models.Appointment.status.in_(BLOCKING_STATES),
                     models.Appointment.start_at < requested_max,
                     models.Appointment.end_at > requested_min,
+                )
+            )
+        )
+    )
+    # Trae bloqueos relevantes UNA SOLA VEZ
+    blocks = list(
+        db.scalars(
+            select(models.CalendarBlock).where(
+                and_(
+                    models.CalendarBlock.doctor_id == payload.doctor_id,
+                    models.CalendarBlock.start_at < requested_max,
+                    models.CalendarBlock.end_at > requested_min,
                 )
             )
         )
@@ -228,10 +329,17 @@ def hold_appointments(
         if s_start <= now:
             raise HTTPException(400, detail="No puedes elegir un horario en el pasado")
 
+        # Conflicto con citas previamente cargadas
         for ea in existing:
             if overlaps_utc(s_start, s_end, ea.start_at, ea.end_at):
                 raise HTTPException(409, detail="Uno o más horarios ya no están disponibles")
 
+        # Conflicto con bloqueos
+        for bl in blocks:
+            if overlaps_utc(s_start, s_end, bl.start_at, bl.end_at):
+                raise HTTPException(409, detail="Uno o más horarios están bloqueados por la doctora")
+
+        # Conflicto entre slots seleccionados (duplicados/solapados)
         for tmp in to_create:
             if overlaps_utc(s_start, s_end, tmp.start_at, tmp.end_at):
                 raise HTTPException(409, detail="Selección contiene horarios solapados/duplicados")
@@ -247,10 +355,13 @@ def hold_appointments(
         )
         to_create.append(appt)
 
+    # Inserta en DB
     for a in to_create:
         db.add(a)
 
+    # Verificación final exacta (mismo rango) y carrera
     for a in to_create:
+        # contra citas
         clash = db.scalar(
             select(models.Appointment.id).where(
                 and_(
@@ -263,6 +374,19 @@ def hold_appointments(
         )
         if clash:
             raise HTTPException(409, detail="Otro usuario tomó uno de los horarios durante el proceso")
+
+        # contra bloqueos exactos
+        bl_clash = db.scalar(
+            select(models.CalendarBlock.id).where(
+                and_(
+                    models.CalendarBlock.doctor_id == a.doctor_id,
+                    models.CalendarBlock.start_at < a.end_at,
+                    models.CalendarBlock.end_at > a.start_at,
+                )
+            )
+        )
+        if bl_clash:
+            raise HTTPException(409, detail="Uno de los horarios se bloqueó durante el proceso")
 
     db.commit()
     for a in to_create:
@@ -295,23 +419,17 @@ async def confirm_appt(
     if e <= s:
         raise HTTPException(status_code=400, detail="Rango horario inválido")
 
+    # Si el hold expiró, validar que no haya conflicto ahora (incluye bloqueos)
+    now_utc = datetime.now(timezone.utc)
     if appt.status == models.AppointmentStatus.pending and appt.method == models.PaymentMethod.payphone:
-        now_utc = datetime.now(timezone.utc)
         if appt.hold_until and now_utc > to_utc(appt.hold_until):
-            conflict = db.scalar(
-                select(models.Appointment.id).where(
-                    and_(
-                        models.Appointment.doctor_id == appt.doctor_id,
-                        models.Appointment.id != appt.id,
-                        models.Appointment.status.in_(BLOCKING_STATES),
-                        models.Appointment.start_at < e,
-                        models.Appointment.end_at > s,
-                    )
-                )
-            )
-            if conflict:
-                raise HTTPException(400, detail="El horario fue tomado por otra cita; el paciente debe elegir otro.")
+            if has_conflict_or_block(db, doctor_id=appt.doctor_id, start_utc=s, end_utc=e, exclude_appt_id=appt.id):
+                raise HTTPException(400, detail="El horario fue tomado o bloqueado; el paciente debe elegir otro.")
             appt.hold_until = None
+
+    # Validar que no haya bloqueos (por si se confirmó free) o nuevos conflictos
+    if has_conflict_or_block(db, doctor_id=appt.doctor_id, start_utc=s, end_utc=e, exclude_appt_id=appt.id):
+        raise HTTPException(409, detail="Ese horario ya está ocupado o bloqueado")
 
     if not appt.zoom_meeting_id or not appt.zoom_join_url:
         if not settings.ZOOM_DEFAULT_USER:
@@ -376,24 +494,9 @@ async def reschedule_appt(
     if new_e <= new_s:
         raise HTTPException(400, "Rango horario inválido")
 
-    # Conflictos con otras citas
-    busy_stmt = (
-        select(models.Appointment)
-        .where(models.Appointment.doctor_id == appt.doctor_id)
-        .where(models.Appointment.id != appt.id)
-        .where(
-            or_(
-                models.Appointment.status == models.AppointmentStatus.confirmed,
-                (models.Appointment.status == models.AppointmentStatus.pending) &
-                ((models.Appointment.hold_until == None) | (models.Appointment.hold_until > now))  # noqa: E711
-            )
-        )
-        .where(models.Appointment.start_at < new_e)
-        .where(models.Appointment.end_at > new_s)
-    )
-    conflicts = list(db.scalars(busy_stmt))
-    if conflicts:
-        raise HTTPException(409, "Ese horario ya está ocupado")
+    # Conflictos con otras citas + BLOQUEOS
+    if has_conflict_or_block(db, doctor_id=appt.doctor_id, start_utc=new_s, end_utc=new_e, exclude_appt_id=appt.id):
+        raise HTTPException(409, "Ese horario ya está ocupado o bloqueado")
 
     old_start, old_end = appt.start_at, appt.end_at
     appt.start_at = new_s
