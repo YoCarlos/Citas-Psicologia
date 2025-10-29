@@ -9,6 +9,7 @@ import { ArrowRight, CalendarClock, Clock4, RotateCcw, Video, X, Info } from "lu
 // =========================
 const TZ = "America/Guayaquil"
 const pad = (n) => String(n).padStart(2, "0")
+const DEFAULT_LEAD_MINUTES = 60 // margen mínimo para mostrar slots al reagendar (1 hora)
 
 /**
  * Muchas APIs devuelven "YYYY-MM-DDTHH:MM:SS" **sin zona**.
@@ -17,10 +18,10 @@ const pad = (n) => String(n).padStart(2, "0")
  */
 const parseAsGYE = (iso) => {
     if (!iso) return null
-    if (iso.includes("Z") || iso.includes("+") || iso.includes("-") && iso.length > 19) {
+    if ((iso.includes("Z") || iso.includes("+") || iso.includes("-")) && iso.length > 19) {
         return new Date(iso) // ya tiene zona
     }
-    // Forzar interpretación como GYE anexando -05:00 (o usa tus reglas DST si cambian)
+    // Forzar interpretación como GYE anexando -05:00 (Ecuador sin DST)
     return new Date(`${iso}-05:00`)
 }
 
@@ -54,7 +55,6 @@ const nowInGYE = () => {
     const hh = Number(new Date().toLocaleString("en-CA", { hour: "2-digit", hour12: false, timeZone: TZ }))
     const mm = Number(new Date().toLocaleString("en-CA", { minute: "2-digit", timeZone: TZ }))
     const ss = Number(new Date().toLocaleString("en-CA", { second: "2-digit", timeZone: TZ }))
-    // Construimos una fecha local equivalente, luego JS la convierte a epoch UTC internamente
     return new Date(`${y}-${pad(m)}-${pad(d)}T${pad(hh)}:${pad(mm)}:${pad(ss)}-05:00`)
 }
 
@@ -96,6 +96,21 @@ function CleanModal({ open, onClose, title, children, footer }) {
     )
 }
 
+// Pequeño banner reutilizable
+const Banner = ({ kind = "info", children }) => {
+    const styles = {
+        info: "border-blue-200 bg-blue-50 text-blue-800",
+        success: "border-emerald-200 bg-emerald-50 text-emerald-800",
+        error: "border-rose-200 bg-rose-50 text-rose-700",
+    }[kind]
+    return (
+        <div className={`rounded-lg border px-3 py-2 text-sm ${styles} flex items-start gap-2`}>
+            <Info className="h-4 w-4 mt-0.5" />
+            <div>{children}</div>
+        </div>
+    )
+}
+
 export default function PatientAppointments() {
     const user = getUserFromToken()
     const patientId = user?.id
@@ -112,6 +127,21 @@ export default function PatientAppointments() {
     const [daySlots, setDaySlots] = React.useState([])
     const [slotsLoading, setSlotsLoading] = React.useState(false)
     const [slotsMsg, setSlotsMsg] = React.useState({ type: "", text: "" }) // info | success | error
+
+    // Margen de antelación para mostrar slots al reagendar
+    const [leadMinutes, setLeadMinutes] = React.useState(DEFAULT_LEAD_MINUTES)
+
+    // ---- Helpers de razones de bloqueo (tooltips y texto visible)
+    const getRescheduleDisabledReason = (appt) => {
+        if (!appt.canReschedule) return "Solo se puede reagendar hasta 4 horas antes del inicio."
+        return ""
+    }
+
+    const getJoinDisabledReason = (appt) => {
+        if (!appt.zoom_join_url) return "Aún no hay enlace de Zoom disponible."
+        if (appt.status !== "confirmed") return "La sesión no está confirmada."
+        return "El botón se habilita desde 5 minutos antes del inicio."
+    }
 
     // Cargar citas del paciente
     const load = React.useCallback(async () => {
@@ -141,6 +171,10 @@ export default function PatientAppointments() {
                 if (end >= now) up.push(item)
                 else pa.push(item)
             }
+            // Orden estable
+            up.sort((a, b) => parseAsGYE(a.start_at) - parseAsGYE(b.start_at))
+            pa.sort((a, b) => parseAsGYE(b.start_at) - parseAsGYE(a.start_at))
+
             setUpcoming(up)
             setPast(pa)
         } catch (e) {
@@ -161,14 +195,28 @@ export default function PatientAppointments() {
         const ymd = toLocalYMD(appt.start_at)
         setPickDay(ymd)
         setModalOpen(true)
+
+        // (Opcional) cargar margen lead desde settings/booking de la doctora
+        try {
+            const bookingCfg = await apiGet(`/settings/booking?doctor_id=${appt.doctor_id}`)
+            if (bookingCfg?.min_lead_minutes != null) {
+                setLeadMinutes(Number(bookingCfg.min_lead_minutes) || DEFAULT_LEAD_MINUTES)
+            } else {
+                setLeadMinutes(DEFAULT_LEAD_MINUTES)
+            }
+        } catch {
+            setLeadMinutes(DEFAULT_LEAD_MINUTES)
+        }
+
         await fetchDaySlots(appt.doctor_id, ymd, appt)
     }
 
-    // Cargar slots del día (en GYE)
+    // Cargar slots del día (en GYE) aplicando margen mínimo y excluyendo el propio horario
     const fetchDaySlots = async (doctorId, ymd, currentAppt = resAppt) => {
         setSlotsLoading(true)
         setSlotsMsg({ type: "info", text: "Buscando horarios disponibles…" })
         setDaySlots([])
+        let isMounted = true
         try {
             const from = startOfDayGYE(ymd).toISOString()
             const to = endOfDayGYE(ymd).toISOString()
@@ -179,25 +227,31 @@ export default function PatientAppointments() {
             }).toString()
             const res = await apiGet(`/availability/slots?${qs}`)
 
-            // Filtrar: solo futuros (vs ahora GYE) y excluir el propio horario
+            // Filtrar con margen mínimo (lead)
             const now = nowInGYE()
+            const minStart = new Date(now.getTime() + leadMinutes * 60000)
+
             const filtered = (res || []).filter((s) => {
                 const st = parseAsGYE(s.start_at)
-                if (st <= now) return false
+                if (st < minStart) return false // ⛔️ no mostrar si empieza en < leadMinutes
                 if (currentAppt && s.start_at === currentAppt.start_at && s.end_at === currentAppt.end_at) return false
                 return true
             })
+
+            if (!isMounted) return
             setDaySlots(filtered)
             setSlotsMsg(
                 filtered.length
-                    ? { type: "info", text: "Elige un nuevo horario para tu cita." }
-                    : { type: "info", text: "No hay horarios disponibles en esta fecha." }
+                    ? { type: "info", text: `Elige un nuevo horario. *Se requiere al menos ${leadMinutes} minuto(s) de antelación.*` }
+                    : { type: "info", text: `No hay horarios disponibles en esta fecha con al menos ${leadMinutes} minuto(s) de antelación.` }
             )
         } catch (e) {
+            if (!isMounted) return
             setSlotsMsg({ type: "error", text: e?.message || "No se pudieron cargar los horarios." })
         } finally {
-            setSlotsLoading(false)
+            if (isMounted) setSlotsLoading(false)
         }
+        return () => { isMounted = false }
     }
 
     const onPickDayChange = async (e) => {
@@ -235,28 +289,11 @@ export default function PatientAppointments() {
         window.open(appt.zoom_join_url, "_blank", "noopener")
     }
 
-    // Badge para mensajes
-    const Banner = ({ kind = "info", children }) => {
-        const styles = {
-            info: "border-blue-200 bg-blue-50 text-blue-800",
-            success: "border-emerald-200 bg-emerald-50 text-emerald-800",
-            error: "border-rose-200 bg-rose-50 text-rose-700",
-        }[kind]
-        return (
-            <div className={`rounded-lg border px-3 py-2 text-sm ${styles} flex items-start gap-2`}>
-                <Info className="h-4 w-4 mt-0.5" />
-                <div>{children}</div>
-            </div>
-        )
-    }
-
     return (
         <div className="space-y-6">
             <h2 className="text-xl font-bold text-blue-800">Mis citas</h2>
 
-            {errorMsg && (
-                <Banner kind="error">{errorMsg}</Banner>
-            )}
+            {errorMsg && <Banner kind="error">{errorMsg}</Banner>}
 
             {/* Próximas */}
             <div className="rounded-2xl bg-white border p-5">
@@ -275,54 +312,82 @@ export default function PatientAppointments() {
                         {upcoming.length === 0 && (
                             <div className="text-sm text-gray-500">Sin próximas citas.</div>
                         )}
-                        {upcoming.map((a) => (
-                            <div key={a.id} className="py-3 flex items-center justify-between">
-                                <div>
-                                    {/* Fecha y hora con estilos distintos */}
-                                    <div className="font-medium">
-                                        <span className="text-gray-800">{a.ymd}</span>{" "}
-                                        <span className="text-blue-700 font-mono tabular-nums">{a.timeLabel}</span>
-                                    </div>
-                                    <div className="text-xs text-gray-500">
-                                        Estado: {a.status}
-                                    </div>
-                                </div>
-                                <div className="flex gap-2">
-                                    <button
-                                        onClick={() => openReschedule(a)}
-                                        disabled={!a.canReschedule}
-                                        className={[
-                                            "px-3 py-1.5 rounded-lg border text-sm inline-flex items-center gap-2",
-                                            a.canReschedule
-                                                ? "text-gray-700 hover:bg-gray-50"
-                                                : "text-gray-400 cursor-not-allowed opacity-60",
-                                        ].join(" ")}
-                                        title={a.canReschedule ? "Reagendar" : "Solo hasta 4 horas antes"}
-                                    >
-                                        <RotateCcw className="h-4 w-4" /> Reagendar
-                                    </button>
+                        {upcoming.map((a) => {
+                            const reschDisabled = !a.canReschedule
+                            const reschReason = getRescheduleDisabledReason(a)
 
-                                    <button
-                                        onClick={() => onJoin(a)}
-                                        disabled={!a.canJoin}
-                                        className={[
-                                            "px-3 py-1.5 rounded-lg text-sm inline-flex items-center gap-2",
-                                            a.canJoin
-                                                ? "bg-blue-700 text-white hover:bg-blue-800"
-                                                : "bg-gray-200 text-gray-500 cursor-not-allowed",
-                                        ].join(" ")}
-                                        title={a.canJoin ? "Unirse a la sesión" : "Disponible 5 min antes"}
-                                    >
-                                        <Video className="h-4 w-4" /> Unirse
-                                    </button>
+                            const joinDisabled = !a.canJoin
+                            const joinReason = getJoinDisabledReason(a)
+
+                            return (
+                                <div key={a.id} className="py-3">
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            {/* Fecha y hora con estilos distintos */}
+                                            <div className="font-medium">
+                                                <span className="text-gray-800">{a.ymd}</span>{" "}
+                                                <span className="text-blue-700 font-mono tabular-nums">{a.timeLabel}</span>
+                                            </div>
+                                            <div className="text-xs text-gray-500">Estado: {a.status}</div>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button
+                                                onClick={() => openReschedule(a)}
+                                                disabled={reschDisabled}
+                                                className={[
+                                                    "px-3 py-1.5 rounded-lg border text-sm inline-flex items-center gap-2",
+                                                    reschDisabled
+                                                        ? "text-gray-400 cursor-not-allowed opacity-60"
+                                                        : "text-gray-700 hover:bg-gray-50",
+                                                ].join(" ")}
+                                                title={reschDisabled ? reschReason : "Reagendar"}
+                                                aria-disabled={reschDisabled ? "true" : "false"}
+                                            >
+                                                <RotateCcw className="h-4 w-4" /> Reagendar
+                                            </button>
+
+                                            <button
+                                                onClick={() => onJoin(a)}
+                                                disabled={joinDisabled}
+                                                className={[
+                                                    "px-3 py-1.5 rounded-lg text-sm inline-flex items-center gap-2",
+                                                    joinDisabled
+                                                        ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+                                                        : "bg-blue-700 text-white hover:bg-blue-800",
+                                                ].join(" ")}
+                                                title={joinDisabled ? joinReason : "Unirse a la sesión"}
+                                                aria-disabled={joinDisabled ? "true" : "false"}
+                                            >
+                                                <Video className="h-4 w-4" /> Unirse
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Razones visibles cuando están bloqueados */}
+                                    {(reschDisabled || joinDisabled) && (
+                                        <div className="mt-2 flex flex-col gap-1">
+                                            {reschDisabled && (
+                                                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 inline-flex items-center gap-1 w-fit">
+                                                    <Info className="h-3.5 w-3.5" />
+                                                    {reschReason}
+                                                </div>
+                                            )}
+                                            {joinDisabled && (
+                                                <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-2 py-1 inline-flex items-center gap-1 w-fit">
+                                                    <Info className="h-3.5 w-3.5" />
+                                                    {joinReason}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
-                            </div>
-                        ))}
+                            )
+                        })}
                     </div>
                 )}
 
                 <div className="mt-3 text-xs text-gray-500">
-                    * Puedes reagendar hasta 4 horas antes del inicio. El botón aparecerá deshabilitado si ya no es posible.
+                    * Puedes reagendar hasta 4 horas antes del inicio. Los horarios de cambio requieren {leadMinutes} minuto(s) de antelación como mínimo.
                 </div>
             </div>
 
@@ -365,7 +430,7 @@ export default function PatientAppointments() {
                 title="Reagendar cita"
                 footer={
                     <div className="text-xs text-gray-500">
-                        Recuerda: solo puedes reagendar hasta 4 horas antes del inicio.
+                        Solo puedes reagendar hasta 4 horas antes del inicio. Los horarios disponibles respetan un margen mínimo de {leadMinutes} minuto(s) de antelación.
                     </div>
                 }
             >
@@ -420,7 +485,9 @@ export default function PatientAppointments() {
                             ) : (
                                 <>
                                     {daySlots.length === 0 ? (
-                                        <div className="text-sm text-gray-500">No hay horarios disponibles en esta fecha.</div>
+                                        <div className="text-sm text-gray-500">
+                                            No hay horarios disponibles con al menos {leadMinutes} minuto(s) de antelación.
+                                        </div>
                                     ) : (
                                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                                             {daySlots.map((s) => {
@@ -436,7 +503,8 @@ export default function PatientAppointments() {
                                                                 ? "border-gray-200 text-gray-400 cursor-not-allowed"
                                                                 : "border-emerald-200 text-emerald-800 hover:bg-emerald-50",
                                                         ].join(" ")}
-                                                        title={disabled ? "No puedes reagendar: menos de 4 horas." : "Elegir este horario"}
+                                                        title={disabled ? "No puedes reagendar: faltan menos de 4 horas para tu cita." : "Elegir este horario"}
+                                                        aria-disabled={disabled ? "true" : "false"}
                                                     >
                                                         <Clock4 className="h-4 w-4" />
                                                         {toLocalHM(s.start_at)}–{toLocalHM(s.end_at)}

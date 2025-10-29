@@ -27,6 +27,7 @@ import PatientAppointments from "./pages/patient/Appointments.jsx"
 import PatientSettings from "./pages/patient/Settings.jsx"
 import PatientProfile from "./pages/patient/Profile.jsx"
 import PatientCheckOut from "./pages/patient/Checkout.jsx"
+import PaymentResult from "./pages/patient/PaymentResult.jsx"
 // Protección
 import ProtectedRoute from "./components/ProtectedRoute.jsx"
 
@@ -94,6 +95,7 @@ export default function App() {
               </PatientCheckOut>
             }
           />
+          <Route path="payment-result" element={<PaymentResult />} />
 
           {/* Perfil siempre accesible */}
           <Route path="perfil" element={<PatientProfile />} />

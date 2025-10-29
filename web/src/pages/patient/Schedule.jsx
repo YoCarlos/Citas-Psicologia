@@ -4,10 +4,12 @@ import MonthCalendar, { toYMD } from "../../components/MonthCalendar"
 import { apiGet } from "../../lib/api"
 import { getUserFromToken } from "../../lib/auth"
 import { Clock4, ArrowRight } from "lucide-react"
-import { useNavigate } from "react-router-dom"
+import { useNavigate, useSearchParams } from "react-router-dom"
+
 // --- utilidades ---
 const pad = (n) => String(n).padStart(2, "0")
 const TZ = "America/Guayaquil"
+const DEFAULT_LEAD_MINUTES = 60 // margen mínimo para agendar (minutos)
 
 const todayYMD = () => {
     const now = new Date()
@@ -73,9 +75,18 @@ function chunkRanges(from, to, maxDays = 31) {
 
 export default function PatientSchedule() {
     const nav = useNavigate()
+    const [sp] = useSearchParams()
+
     const user = getUserFromToken()
     const role = user?.role
-    const doctorId = role === "doctor" ? user?.id : user?.doctor_id
+
+    // doctor_id: prioridad querystring > doctor (si es doctora logueada) > doctor asignado al paciente
+    const qsDoctorId = sp.get("doctor_id")
+    const doctorId = qsDoctorId
+        ? Number(qsDoctorId)
+        : role === "doctor"
+            ? user?.id
+            : user?.doctor_id
 
     const initial = todayYMD()
     const [selected, setSelected] = React.useState(initial)
@@ -84,45 +95,51 @@ export default function PatientSchedule() {
     const [errorMsg, setErrorMsg] = React.useState("")
     const [availMap, setAvailMap] = React.useState({})
     const [priceUSD, setPriceUSD] = React.useState(35) // fallback si no hay settings
+    const [leadMinutes, setLeadMinutes] = React.useState(DEFAULT_LEAD_MINUTES) // margen de antelación
 
     // selección de slots (clave = `${startISO}|${endISO}`)
     const [picked, setPicked] = React.useState(() => new Set())
 
-    // badges = número de slots por fecha
+    // 🔒 Filtrar disponibilidad global por margen mínimo (leadMinutes)
+    const availMapFiltered = React.useMemo(() => {
+        const leadMs = leadMinutes * 60 * 1000
+        const now = new Date()
+        const minStart = new Date(now.getTime() + leadMs)
+
+        const out = {}
+        for (const ymd of Object.keys(availMap)) {
+            out[ymd] = (availMap[ymd] || []).filter(s => new Date(s.startISO) >= minStart)
+        }
+        return out
+    }, [availMap, leadMinutes])
+
+    // badges = número de slots por fecha (ya filtrados por margen)
     const badges = React.useMemo(() => {
         const b = {}
-        for (const k of Object.keys(availMap)) b[k] = availMap[k]?.length || 0
+        for (const k of Object.keys(availMapFiltered)) b[k] = availMapFiltered[k]?.length || 0
         return b
-    }, [availMap])
+    }, [availMapFiltered])
 
-    const selectedSlots = availMap[selected] ?? []
+    const selectedSlots = availMapFiltered[selected] ?? []
 
-    // descarta slots que ya empezaron si el día seleccionado es hoy
-    const filteredSelectedSlots = React.useMemo(() => {
-        const today = todayYMD()
-        if (selected !== today) return selectedSlots
-        const now = new Date()
-        return selectedSlots.filter((s) => new Date(s.startISO) > now)
-    }, [selected, selectedSlots])
-
-    // separa en mañana/tarde
+    // separa en mañana/tarde (ya con margen aplicado)
     const amSlots = React.useMemo(
-        () => filteredSelectedSlots.filter((s) => !s.isPM),
-        [filteredSelectedSlots]
+        () => selectedSlots.filter((s) => !s.isPM),
+        [selectedSlots]
     )
     const pmSlots = React.useMemo(
-        () => filteredSelectedSlots.filter((s) => s.isPM),
-        [filteredSelectedSlots]
+        () => selectedSlots.filter((s) => s.isPM),
+        [selectedSlots]
     )
 
-
-
-    // Carga inicial: settings (precio) + 60 días de disponibilidad desde hoy
+    // Carga inicial: settings (precio/margen) + 60 días de disponibilidad desde hoy
     React.useEffect(() => {
         if (!doctorId) {
             setErrorMsg("No encontramos la doctora asignada. Solicita una.")
             return
         }
+        let isMounted = true
+
         const load = async () => {
             setLoading(true)
             setErrorMsg("")
@@ -130,12 +147,22 @@ export default function PatientSchedule() {
                 // 1) Precio de la doctora
                 try {
                     const cfg = await apiGet(`/settings/consultation?doctor_id=${doctorId}`)
-                    if (cfg?.price_usd != null) setPriceUSD(Number(cfg.price_usd))
+                    if (isMounted && cfg?.price_usd != null) setPriceUSD(Number(cfg.price_usd))
                 } catch (e) {
-                    // si 404, usamos fallback
+                    // si 404/500, usamos fallback
                 }
 
-                // 2) Slots
+                // 2) (Opcional) margen de antelación por doctora
+                try {
+                    const booking = await apiGet(`/settings/booking?doctor_id=${doctorId}`)
+                    if (isMounted && booking?.min_lead_minutes != null) {
+                        setLeadMinutes(Number(booking.min_lead_minutes))
+                    }
+                } catch (e) {
+                    // si 404/500, usamos DEFAULT_LEAD_MINUTES
+                }
+
+                // 3) Slots
                 const from = new Date()
                 const to = addDays(from, 60)
                 const ranges = chunkRanges(from, to, 31)
@@ -151,14 +178,16 @@ export default function PatientSchedule() {
                     if (Array.isArray(part)) allSlots.push(...part)
                 }
 
-                setAvailMap(groupSlotsByDay(allSlots))
+                if (isMounted) setAvailMap(groupSlotsByDay(allSlots))
             } catch (err) {
-                setErrorMsg(err?.message || "No se pudo cargar la disponibilidad.")
+                if (isMounted) setErrorMsg(err?.message || "No se pudo cargar la disponibilidad.")
             } finally {
-                setLoading(false)
+                if (isMounted) setLoading(false)
             }
         }
         load()
+
+        return () => { isMounted = false }
     }, [doctorId])
 
     // toggle de selección
@@ -177,8 +206,8 @@ export default function PatientSchedule() {
     // lista de seleccionados (ordenados por fecha/hora) y agrupados por día
     const pickedList = React.useMemo(() => {
         const out = []
-        for (const ymd of Object.keys(availMap)) {
-            const daySlots = (availMap[ymd] || []).filter((s) => picked.has(keyOf(s)))
+        for (const ymd of Object.keys(availMapFiltered)) {
+            const daySlots = (availMapFiltered[ymd] || []).filter((s) => picked.has(keyOf(s)))
             if (daySlots.length) {
                 const sorted = [...daySlots].sort((a, b) => new Date(a.startISO) - new Date(b.startISO))
                 out.push({ ymd, slots: sorted })
@@ -192,7 +221,7 @@ export default function PatientSchedule() {
         // orden por fecha asc
         out.sort((a, b) => new Date(a.ymd) - new Date(b.ymd))
         return out
-    }, [picked, availMap, selected, selectedSlots])
+    }, [picked, availMapFiltered, selected, selectedSlots])
 
     const pickedCount = React.useMemo(
         () => Array.from(picked).length,
@@ -216,6 +245,8 @@ export default function PatientSchedule() {
             },
         })
     }
+
+    const clearPicked = () => setPicked(new Set())
 
     const Section = ({ title, count, children }) => (
         <div className="mt-4">
@@ -269,7 +300,14 @@ export default function PatientSchedule() {
             <div className="rounded-2xl border bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between">
                     <h3 className="font-semibold text-emerald-800">Horarios disponibles — {selected}</h3>
-                    <div className="text-xs text-gray-500">Tarifa: ${Number(priceUSD).toFixed(2)} • TZ: América/Guayaquil</div>
+                    <div className="text-xs text-gray-500">
+                        Tarifa: ${Number(priceUSD).toFixed(2)} • TZ: América/Guayaquil
+                    </div>
+                </div>
+
+                {/* Aviso de margen activo */}
+                <div className="mt-2 text-xs text-gray-500">
+                    No se muestran horarios que inicien en menos de {leadMinutes} minutos desde ahora.
                 </div>
 
                 {errorMsg && (
@@ -282,7 +320,7 @@ export default function PatientSchedule() {
                     <div className="mt-4 text-sm text-gray-500">Cargando horarios…</div>
                 ) : (
                     <>
-                        {filteredSelectedSlots.length === 0 ? (
+                        {selectedSlots.length === 0 ? (
                             <div className="mt-4 text-sm text-gray-500">No hay horarios disponibles para esta fecha.</div>
                         ) : (
                             <>
@@ -338,15 +376,28 @@ export default function PatientSchedule() {
                         <span className="font-semibold text-emerald-700">${totalUSD}</span>
                     </div>
 
-                    <button
-                        type="button"
-                        onClick={onNext}
-                        disabled={pickedCount === 0}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60"
-                    >
-                        Siguiente paso
-                        <ArrowRight className="h-4 w-4" />
-                    </button>
+                    <div className="flex gap-2">
+                        <button
+                            type="button"
+                            onClick={clearPicked}
+                            disabled={pickedCount === 0}
+                            className="px-3 py-2 rounded-lg border text-sm hover:bg-gray-50 disabled:opacity-60"
+                            title={pickedCount === 0 ? "No hay nada que limpiar" : "Quitar todos los horarios seleccionados"}
+                        >
+                            Limpiar selección
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={onNext}
+                            disabled={pickedCount === 0}
+                            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60"
+                            title={pickedCount === 0 ? "Selecciona al menos un horario para continuar" : "Continuar al checkout"}
+                        >
+                            Siguiente paso
+                            <ArrowRight className="h-4 w-4" />
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>

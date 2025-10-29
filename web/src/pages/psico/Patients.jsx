@@ -167,12 +167,7 @@ export default function Patients() {
         <div className="rounded-2xl bg-white p-5 border border-emerald-100 shadow-sm">
             <div className="flex items-center justify-between">
                 <h3 className="font-bold text-emerald-800">Pacientes</h3>
-                <Link
-                    to="/psico/pacientes/registrar"
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700"
-                >
-                    <UserPlus className="h-4 w-4" /> Registrar paciente
-                </Link>
+
             </div>
 
             {/* estados */}

@@ -2,6 +2,7 @@
 import React from "react"
 import { apiGet, apiPost } from "../../lib/api"
 import { getUserFromToken } from "../../lib/auth"
+import { Link } from "react-router-dom"
 
 // --- Day.js con TZ Ecuador ---
 import dayjs from "dayjs"
@@ -144,12 +145,12 @@ export default function Calendar() {
         <div className="rounded-2xl bg-white p-5 border border-emerald-100 shadow-sm">
             <div className="flex items-center justify-between">
                 <h3 className="font-bold text-emerald-800">Calendario (solo futuras)</h3>
-                <button
-                    type="button"
-                    className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700"
+                <Link
+                    to="/psico/agendar"
+                    className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700 inline-block text-center"
                 >
                     Crear cita
-                </button>
+                </Link>
             </div>
 
             {errorMsg && (

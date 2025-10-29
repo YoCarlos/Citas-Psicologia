@@ -5,10 +5,12 @@ import {
     Users,
     CalendarRange,
     CalendarDays,
+    CalendarPlus,
+    Lock,
     Settings,
     Menu,
-    UserPlus,
     LogOut,
+    Brain,
 } from "lucide-react"
 import SideDrawer from "../components/SideDrawer"
 import { getUserFromToken, clearToken } from "../lib/auth"
@@ -25,55 +27,101 @@ function initialsFrom(nameOrEmail) {
         const parts = name.split(/\s+/).filter(Boolean)
         return (parts[0][0] + (parts[1]?.[0] || "")).toUpperCase()
     }
-    // si no hay espacio, usa primera letra
     return name[0].toUpperCase()
 }
 
 function PsicoSidebar() {
     return (
         <div className="h-full flex flex-col w-[260px]">
+            {/* Encabezado con logo bonito */}
             <div className="p-4 flex items-center gap-3 border-b">
-                <div className="h-10 w-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold">
-                    Ψ
+                <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-emerald-600 to-emerald-400 flex items-center justify-center text-white">
+                    <Brain className="h-6 w-6" />
                 </div>
                 <div>
-                    <div className="font-bold">CitasPsico</div>
+                    <div className="font-bold text-emerald-700 text-lg">CitasPsico</div>
                     <div className="text-xs text-gray-500">Panel de la psicóloga</div>
                 </div>
             </div>
 
+            {/* Navegación */}
             <nav className="flex-1 p-3 space-y-2">
-                <NavLink to="/psico" end className={({ isActive }) => `${navItemBase} ${isActive ? navActive : navInactive}`}>
+                <NavLink
+                    to="/psico"
+                    end
+                    className={({ isActive }) =>
+                        `${navItemBase} ${isActive ? navActive : navInactive}`
+                    }
+                >
                     <LayoutDashboard className="h-4 w-4" />
                     <span>Resumen</span>
                 </NavLink>
 
-                <NavLink to="/psico/pacientes" className={({ isActive }) => `${navItemBase} ${isActive ? navActive : navInactive}`}>
+                <NavLink
+                    to="/psico/pacientes"
+                    className={({ isActive }) =>
+                        `${navItemBase} ${isActive ? navActive : navInactive}`
+                    }
+                >
                     <Users className="h-4 w-4" />
                     <span>Pacientes</span>
                 </NavLink>
 
-
-
-                <NavLink to="/psico/citas" className={({ isActive }) => `${navItemBase} ${isActive ? navActive : navInactive}`}>
+                <NavLink
+                    to="/psico/citas"
+                    className={({ isActive }) =>
+                        `${navItemBase} ${isActive ? navActive : navInactive}`
+                    }
+                >
                     <CalendarRange className="h-4 w-4" />
                     <span>Citas</span>
                 </NavLink>
 
-                <NavLink to="/psico/calendario" className={({ isActive }) => `${navItemBase} ${isActive ? navActive : navInactive}`}>
+                <NavLink
+                    to="/psico/calendario"
+                    className={({ isActive }) =>
+                        `${navItemBase} ${isActive ? navActive : navInactive}`
+                    }
+                >
                     <CalendarDays className="h-4 w-4" />
                     <span>Calendario</span>
                 </NavLink>
 
-                <NavLink to="/psico/configuracion" className={({ isActive }) => `${navItemBase} ${isActive ? navActive : navInactive}`}>
+                {/* ✅ Nuevas secciones */}
+                <NavLink
+                    to="/psico/agendar"
+                    className={({ isActive }) =>
+                        `${navItemBase} ${isActive ? navActive : navInactive}`
+                    }
+                >
+                    <CalendarPlus className="h-4 w-4" />
+                    <span>Agendar</span>
+                </NavLink>
+
+                <NavLink
+                    to="/psico/bloquear"
+                    className={({ isActive }) =>
+                        `${navItemBase} ${isActive ? navActive : navInactive}`
+                    }
+                >
+                    <Lock className="h-4 w-4" />
+                    <span>Bloquear</span>
+                </NavLink>
+
+                <NavLink
+                    to="/psico/configuracion"
+                    className={({ isActive }) =>
+                        `${navItemBase} ${isActive ? navActive : navInactive}`
+                    }
+                >
                     <Settings className="h-4 w-4" />
                     <span>Configuración</span>
                 </NavLink>
             </nav>
 
-            {/* Footer SIN link "Ir al sitio" */}
-            <div className="p-3 border-t text-sm text-gray-500">
-                {/* espacio reservado por si quieres info de versión o similar */}
+            {/* Pie del sidebar */}
+            <div className="p-3 border-t text-xs text-gray-400 text-center">
+                © {new Date().getFullYear()} CitasPsico
             </div>
         </div>
     )
@@ -108,14 +156,17 @@ export default function PsicoLayout() {
                         >
                             <Menu className="h-5 w-5" />
                         </button>
-                        <div className="font-semibold">Hoy</div>
+                        <div className="font-semibold text-emerald-700">
+                            Panel de Citas
+                        </div>
                     </div>
 
                     <div className="flex items-center gap-3">
                         <div className="text-right">
-                            <div className="text-sm font-semibold">
-                                {/* Muestra nombre real */}
-                                {displayName.startsWith("Dra.") ? displayName : `Dra. ${displayName}`}
+                            <div className="text-sm font-semibold text-gray-800">
+                                {displayName.startsWith("Dra.")
+                                    ? displayName
+                                    : `Dra. ${displayName}`}
                             </div>
                             <div className="text-xs text-gray-500">Psicóloga clínica</div>
                         </div>
@@ -136,7 +187,7 @@ export default function PsicoLayout() {
 
             {/* Layout principal */}
             <div className="max-w-6xl mx-auto w-full grid md:grid-cols-[260px_1fr]">
-                {/* Sidebar desktop */}
+                {/* Sidebar */}
                 <aside className="hidden md:block border-r bg-white">
                     <PsicoSidebar />
                 </aside>

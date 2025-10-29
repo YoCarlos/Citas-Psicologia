@@ -1,5 +1,5 @@
 import React from "react"
-import { apiGet, apiPost } from "../../lib/api"
+import { apiGet, apiPost, apiDelete } from "../../lib/api"
 import { getUserFromToken } from "../../lib/auth"
 import { Info, Plus, Trash2, CalendarClock } from "lucide-react"
 
