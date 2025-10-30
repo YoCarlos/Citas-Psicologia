@@ -57,11 +57,10 @@ async def _shutdown():
 # =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        # ✅ Producción
+     allow_origins=[
         "https://app.psicologacherrez.com",
         "https://psicologacherrez.com",
-        # ✅ Local (déjalo mientras desarrollas)
+        "https://citas-psicologia.pages.dev",   # 👈 para pruebas en la URL de Cloudflare
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:4173",
