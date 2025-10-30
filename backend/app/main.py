@@ -5,7 +5,7 @@ from sqlalchemy import text
 
 from .scheduler import start_scheduler, shutdown_scheduler, rebuild_jobs_on_startup
 from .db import SessionLocal
-from .config import settings as app_settings  
+from .config import settings as app_settings
 
 # Routers
 from .routers import (
@@ -18,10 +18,10 @@ from .routers import (
     payments,
     availability,
     zoom_test,
-    settings as settings_router, 
+    settings as settings_router,
     debug_email,
     debug_scheduler,
-    jobs,  
+    jobs,
     blocks,
 )
 
@@ -38,12 +38,19 @@ app = FastAPI(
 @app.on_event("startup")
 async def _startup():
     # Inicia y reconstruye el scheduler con los jobs pendientes
-    start_scheduler()
-    rebuild_jobs_on_startup()
+    try:
+        start_scheduler()
+        rebuild_jobs_on_startup()
+    except Exception as e:
+        # IMPORTANTE: no tumbar la app en producción por el scheduler
+        print(f"[scheduler] no se pudo iniciar: {e}")
 
 @app.on_event("shutdown")
 async def _shutdown():
-    shutdown_scheduler()
+    try:
+        shutdown_scheduler()
+    except Exception:
+        pass
 
 # =========================
 # CORS
@@ -51,8 +58,13 @@ async def _shutdown():
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        # ✅ Producción
+        "https://app.psicologacherrez.com",
+        "https://psicologacherrez.com",
+        # ✅ Local (déjalo mientras desarrollas)
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:4173",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -75,11 +87,16 @@ app.include_router(settings_router.router)  # ✅ router settings renombrado
 app.include_router(debug_email.router)
 app.include_router(debug_scheduler.router)
 app.include_router(jobs.router)  # ✅ añadido aquí
-app.include_router(blocks.router)  
+app.include_router(blocks.router)
 
 # =========================
 # Healthchecks y debug
 # =========================
+@app.get("/health")
+def health():
+    # ✅ este no toca DB, sirve para Render / monitor
+    return {"status": "ok"}
+
 @app.get("/")
 def root():
     return {"ok": True, "service": "CitasPsico API"}
