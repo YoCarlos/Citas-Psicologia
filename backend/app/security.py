@@ -7,12 +7,12 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError  # 👈 importante
 
 from .config import settings
 from .db import get_db
 from . import models
 
-# Para /docs: FastAPI usa tokenUrl para probar OAuth2 password flow
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -40,6 +40,7 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    # 1) Decodificar token
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALG])
     except JWTError:
@@ -49,19 +50,32 @@ def get_current_user(
     if not sub:
         raise credentials_exc
 
-    # Validación extra de exp (por si el cliente no la respeta)
+    # 2) Validar expiración
     exp = payload.get("exp")
     if exp is not None:
         now_ts = int(datetime.now(timezone.utc).timestamp())
         if now_ts >= int(exp):
             raise credentials_exc
 
+    # 3) user_id numérico
     try:
         user_id = int(sub)
     except (TypeError, ValueError):
         raise credentials_exc
 
-    user = db.get(models.User, user_id)
+    # 4) Cargar usuario desde DB
+    try:
+        user = db.get(models.User, user_id)
+    except OperationalError:
+        # aquí es donde caía tu error:
+        # sqlalchemy.exc.OperationalError: ... SSL connection has been closed unexpectedly
+        # hacemos rollback y devolvemos algo más claro
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo conectar a la base de datos. Intenta de nuevo.",
+        )
+
     if not user:
         raise credentials_exc
 
@@ -69,10 +83,6 @@ def get_current_user(
 
 
 def require_role(required_role: models.UserRole) -> Callable:
-    """
-    Dependencia para endpoints:
-        @router.get(..., dependencies=[Depends(require_role(models.UserRole.doctor))])
-    """
     def _dep(current: models.User = Depends(get_current_user)) -> None:
         if current.role != required_role:
             raise HTTPException(status_code=403, detail="Permisos insuficientes")

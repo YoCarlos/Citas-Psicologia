@@ -31,7 +31,12 @@ target_metadata = models.Base.metadata
 # URL de la base (desde config.py / .env)
 # --------------------------------------------------------
 def get_url() -> str:
-    return settings.DATABASE_URL
+    db_url = settings.DATABASE_URL
+    # 👇 igual que en app/db.py: forzamos ssl si no viene
+    if "sslmode=" not in db_url:
+        sep = "&" if "?" in db_url else "?"
+        db_url = f"{db_url}{sep}sslmode=require"
+    return db_url
 
 # --------------------------------------------------------
 # Migraciones OFFLINE (genera solo SQL)
@@ -54,6 +59,8 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     connectable = create_engine(
         get_url(),
+        # Alembic no necesita pool largo aquí, pero sí le podemos dar pre_ping
+        pool_pre_ping=True,     # 👈 importante en Render / cloud
         poolclass=pool.NullPool,
         future=True,
     )
@@ -75,4 +82,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-
