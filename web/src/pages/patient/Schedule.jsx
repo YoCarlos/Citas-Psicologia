@@ -73,6 +73,15 @@ function chunkRanges(from, to, maxDays = 31) {
     return chunks
 }
 
+// Solape de intervalos [start,end)
+function overlaps(aStartISO, aEndISO, bStartISO, bEndISO) {
+    const a1 = new Date(aStartISO).getTime()
+    const a2 = new Date(aEndISO).getTime()
+    const b1 = new Date(bStartISO).getTime()
+    const b2 = new Date(bEndISO).getTime()
+    return a1 < b2 && b1 < a2
+}
+
 export default function PatientSchedule() {
     const nav = useNavigate()
     const [sp] = useSearchParams()
@@ -108,7 +117,7 @@ export default function PatientSchedule() {
 
         const out = {}
         for (const ymd of Object.keys(availMap)) {
-            out[ymd] = (availMap[ymd] || []).filter(s => new Date(s.startISO) >= minStart)
+            out[ymd] = (availMap[ymd] || []).filter((s) => new Date(s.startISO) >= minStart)
         }
         return out
     }, [availMap, leadMinutes])
@@ -123,16 +132,10 @@ export default function PatientSchedule() {
     const selectedSlots = availMapFiltered[selected] ?? []
 
     // separa en mañana/tarde (ya con margen aplicado)
-    const amSlots = React.useMemo(
-        () => selectedSlots.filter((s) => !s.isPM),
-        [selectedSlots]
-    )
-    const pmSlots = React.useMemo(
-        () => selectedSlots.filter((s) => s.isPM),
-        [selectedSlots]
-    )
+    const amSlots = React.useMemo(() => selectedSlots.filter((s) => !s.isPM), [selectedSlots])
+    const pmSlots = React.useMemo(() => selectedSlots.filter((s) => s.isPM), [selectedSlots])
 
-    // Carga inicial: settings (precio/margen) + 60 días de disponibilidad desde hoy
+    // Carga inicial: settings (precio) + 60 días de disponibilidad desde hoy, y filtrado por citas ocupadas
     React.useEffect(() => {
         if (!doctorId) {
             setErrorMsg("No encontramos la doctora asignada. Solicita una.")
@@ -144,29 +147,21 @@ export default function PatientSchedule() {
             setLoading(true)
             setErrorMsg("")
             try {
-                // 1) Precio de la doctora
+                // 1) Precio de la doctora (settings/consultation)
                 try {
                     const cfg = await apiGet(`/settings/consultation?doctor_id=${doctorId}`)
                     if (isMounted && cfg?.price_usd != null) setPriceUSD(Number(cfg.price_usd))
-                } catch (e) {
-                    // si 404/500, usamos fallback
+                    // Si quieres usar duration_min para validar longitudes, lo tienes en cfg.duration_min
+                } catch {
+                    // fallback al valor por defecto ya seteado
                 }
 
-                // 2) (Opcional) margen de antelación por doctora
-                try {
-                    const booking = await apiGet(`/settings/booking?doctor_id=${doctorId}`)
-                    if (isMounted && booking?.min_lead_minutes != null) {
-                        setLeadMinutes(Number(booking.min_lead_minutes))
-                    }
-                } catch (e) {
-                    // si 404/500, usamos DEFAULT_LEAD_MINUTES
-                }
-
-                // 3) Slots
+                // 2) Ventana de fechas a consultar
                 const from = new Date()
                 const to = addDays(from, 60)
                 const ranges = chunkRanges(from, to, 31)
 
+                // 3) Leer slots disponibles (raw)
                 const allSlots = []
                 for (const win of ranges) {
                     const qs = new URLSearchParams({
@@ -178,7 +173,35 @@ export default function PatientSchedule() {
                     if (Array.isArray(part)) allSlots.push(...part)
                 }
 
-                if (isMounted) setAvailMap(groupSlotsByDay(allSlots))
+                // 4) Traer citas/bloqueos del doctor y filtrar solapes en el cliente
+                let appts = []
+                try {
+                    const q2 = new URLSearchParams({
+                        doctor_id: String(doctorId),
+                        date_from: from.toISOString(),
+                        date_to: to.toISOString(),
+                    }).toString()
+                    appts = await apiGet(`/appointments?${q2}`)
+                } catch {
+                    // si falla, no bloqueamos por citas (pero idealmente no debe fallar)
+                }
+
+                const now = new Date()
+                const blockers = (Array.isArray(appts) ? appts : [])
+                    .filter((a) => {
+                        const st = (a.status || "").toLowerCase()
+                        if (st === "confirmed") return true
+                        if (st === "pending" || st === "processing") {
+                            const hu = a.hold_until ? new Date(a.hold_until) : null
+                            return hu && hu > now
+                        }
+                        return false
+                    })
+                    .map((a) => ({ start: a.start_at, end: a.end_at }))
+
+                const freeSlots = allSlots.filter((s) => !blockers.some((b) => overlaps(s.start_at, s.end_at, b.start, b.end)))
+
+                if (isMounted) setAvailMap(groupSlotsByDay(freeSlots))
             } catch (err) {
                 if (isMounted) setErrorMsg(err?.message || "No se pudo cargar la disponibilidad.")
             } finally {
@@ -187,7 +210,9 @@ export default function PatientSchedule() {
         }
         load()
 
-        return () => { isMounted = false }
+        return () => {
+            isMounted = false
+        }
     }, [doctorId])
 
     // toggle de selección
@@ -223,20 +248,12 @@ export default function PatientSchedule() {
         return out
     }, [picked, availMapFiltered, selected, selectedSlots])
 
-    const pickedCount = React.useMemo(
-        () => Array.from(picked).length,
-        [picked]
-    )
+    const pickedCount = React.useMemo(() => Array.from(picked).length, [picked])
 
-    const totalUSD = React.useMemo(
-        () => (pickedCount * Number(priceUSD)).toFixed(2),
-        [pickedCount, priceUSD]
-    )
+    const totalUSD = React.useMemo(() => (pickedCount * Number(priceUSD)).toFixed(2), [pickedCount, priceUSD])
 
     const onNext = () => {
-        const items = pickedList.flatMap(group =>
-            group.slots.map(s => ({ start_at: s.startISO, end_at: s.endISO }))
-        )
+        const items = pickedList.flatMap((group) => group.slots.map((s) => ({ start_at: s.startISO, end_at: s.endISO })))
         nav("/paciente/checkout", {
             state: {
                 doctorId,
@@ -254,9 +271,7 @@ export default function PatientSchedule() {
                 <h4 className="text-sm font-semibold text-gray-800">{title}</h4>
                 <span className="text-xs rounded-full bg-gray-100 text-gray-700 px-2 py-0.5">{count}</span>
             </div>
-            <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                {children}
-            </div>
+            <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">{children}</div>
         </div>
     )
 
@@ -269,9 +284,7 @@ export default function PatientSchedule() {
                 title={`Seleccionar ${s.label}`}
                 className={[
                     "px-3 py-2 rounded-lg text-sm flex items-center gap-2 whitespace-nowrap font-mono tabular-nums border",
-                    active
-                        ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700"
-                        : "border-emerald-200 text-emerald-800 hover:bg-emerald-50"
+                    active ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700" : "border-emerald-200 text-emerald-800 hover:bg-emerald-50",
                 ].join(" ")}
             >
                 <Clock4 className="h-4 w-4" />
@@ -288,33 +301,19 @@ export default function PatientSchedule() {
             </div>
 
             {/* Calendario */}
-            <MonthCalendar
-                value={selected}
-                onChange={setSelected}
-                badges={badges}
-                locale="es-EC"
-                minDate={todayYMD()} // deshabilita pasados
-            />
+            <MonthCalendar value={selected} onChange={setSelected} badges={badges} locale="es-EC" minDate={todayYMD()} />
 
             {/* Horarios del día */}
             <div className="rounded-2xl border bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between">
                     <h3 className="font-semibold text-emerald-800">Horarios disponibles — {selected}</h3>
-                    <div className="text-xs text-gray-500">
-                        Tarifa: ${Number(priceUSD).toFixed(2)} • TZ: América/Guayaquil
-                    </div>
+                    <div className="text-xs text-gray-500">Tarifa: ${Number(priceUSD).toFixed(2)} • TZ: América/Guayaquil</div>
                 </div>
 
                 {/* Aviso de margen activo */}
-                <div className="mt-2 text-xs text-gray-500">
-                    No se muestran horarios que inicien en menos de {leadMinutes} minutos desde ahora.
-                </div>
+                <div className="mt-2 text-xs text-gray-500">No se muestran horarios que inicien en menos de {leadMinutes} minutos desde ahora.</div>
 
-                {errorMsg && (
-                    <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
-                        {errorMsg}
-                    </div>
-                )}
+                {errorMsg && <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">{errorMsg}</div>}
 
                 {loading ? (
                     <div className="mt-4 text-sm text-gray-500">Cargando horarios…</div>
@@ -379,7 +378,7 @@ export default function PatientSchedule() {
                     <div className="flex gap-2">
                         <button
                             type="button"
-                            onClick={clearPicked}
+                            onClick={() => setPicked(new Set())}
                             disabled={pickedCount === 0}
                             className="px-3 py-2 rounded-lg border text-sm hover:bg-gray-50 disabled:opacity-60"
                             title={pickedCount === 0 ? "No hay nada que limpiar" : "Quitar todos los horarios seleccionados"}
@@ -389,7 +388,12 @@ export default function PatientSchedule() {
 
                         <button
                             type="button"
-                            onClick={onNext}
+                            onClick={() => {
+                                const items = pickedList.flatMap((group) => group.slots.map((s) => ({ start_at: s.startISO, end_at: s.endISO })))
+                                nav("/paciente/checkout", {
+                                    state: { doctorId, priceUSD, items },
+                                })
+                            }}
                             disabled={pickedCount === 0}
                             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60"
                             title={pickedCount === 0 ? "Selecciona al menos un horario para continuar" : "Continuar al checkout"}
