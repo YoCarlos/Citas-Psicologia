@@ -11,31 +11,29 @@ const TZ = "America/Guayaquil"
 const pad = (n) => String(n).padStart(2, "0")
 const DEFAULT_LEAD_MINUTES = 60 // margen mínimo para mostrar slots al reagendar (1 hora)
 
-// --- helpers de fecha/hora (robustos con/ sin Z) ---
+// ------------------------------
+// Helpers robustos de fecha/hora
+// ------------------------------
 const hasTZ = (s) => /Z$|[+\-]\d{2}:\d{2}$/.test(s || "")
 
 /**
- * Si viene con Z u offset -> respeta el offset.
- * Si NO viene con zona -> interprétalo como hora local GYE anexando -05:00.
+ * Interpreta cualquier ISO así:
+ * - Si trae Z/offset => respeta el offset (ej. slots del backend con Z)
+ * - Si NO trae zona  => trátalo como UTC agregando 'Z' (caso /appointments naive)
  */
-const parseAsGYE = (iso) => {
-    if (!iso) return null
-    const normalized = hasTZ(iso) ? iso : `${iso}-05:00`
-    return new Date(normalized)
-}
+const parseAny = (iso) => new Date(hasTZ(iso) ? iso : `${iso}Z`)
 
-// YYYY-MM-DD desde ISO (interpretado/renderizado en GYE)
+// Render siempre en GYE
 const toLocalYMD = (iso) => {
-    const d = parseAsGYE(iso)
+    const d = parseAny(iso)
     const y = d.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
     const m = d.toLocaleString("en-CA", { month: "2-digit", timeZone: TZ })
     const day = d.toLocaleString("en-CA", { day: "2-digit", timeZone: TZ })
     return `${y}-${m}-${day}`
 }
 
-// HH:MM 24h desde ISO (interpretado/renderizado en GYE)
 const toLocalHM = (iso) =>
-    parseAsGYE(iso).toLocaleTimeString("es-EC", {
+    parseAny(iso).toLocaleTimeString("es-EC", {
         hour: "2-digit",
         minute: "2-digit",
         hour12: false,
@@ -57,32 +55,34 @@ const nowInGYE = () => {
     return new Date(`${y}-${pad(m)}-${pad(d)}T${pad(hh)}:${pad(mm)}:${pad(ss)}-05:00`)
 }
 
-// overlap [start,end)
-const overlaps = (aStartISO, aEndISO, bStartISO, bEndISO) => {
-    const a1 = parseAsGYE(aStartISO).getTime()
-    const a2 = parseAsGYE(aEndISO).getTime()
-    const b1 = parseAsGYE(bStartISO).getTime()
-    const b2 = parseAsGYE(bEndISO).getTime()
-    return a1 < b2 && b1 < a2
+// Overlap [start,end) mezclando slots(Z) y citas(naive→UTC)
+const overlapsMixed = (slotStartISO, slotEndISO, apptStartISO, apptEndISO) => {
+    const s1 = parseAny(slotStartISO).getTime() // slot ya trae Z
+    const s2 = parseAny(slotEndISO).getTime()
+    const a1 = parseAny(apptStartISO).getTime() // naive -> UTC
+    const a2 = parseAny(apptEndISO).getTime()
+    return s1 < a2 && a1 < s2
 }
 
-// Habilitar “Unirse” 5 minutos antes (en GYE)
+// Habilitar “Unirse” 5 minutos antes (comparando en GYE para ventana)
 const canJoinNow = (startISO, endISO) => {
     const now = nowInGYE()
-    const start = parseAsGYE(startISO)
-    const end = parseAsGYE(endISO)
+    const start = parseAny(startISO)
+    const end = parseAny(endISO)
     return now >= new Date(start.getTime() - 5 * 60000) && now <= end
 }
 
-// Regla de reagendar: >= 4 horas antes del inicio (en GYE)
+// Regla de reagendar: >= 4 horas antes del inicio (comparado en GYE)
 const canReschedule = (startISO) => {
     const now = nowInGYE()
-    const start = parseAsGYE(startISO)
+    const start = parseAny(startISO)
     const diffHrs = (start - now) / 3600000
     return diffHrs >= 4
 }
 
-// Modal sencillo y limpio
+// ------------------------------
+// UI helpers
+// ------------------------------
 function CleanModal({ open, onClose, title, children, footer }) {
     if (!open) return null
     return (
@@ -104,7 +104,6 @@ function CleanModal({ open, onClose, title, children, footer }) {
     )
 }
 
-// Pequeño banner reutilizable
 const Banner = ({ kind = "info", children }) => {
     const styles = {
         info: "border-blue-200 bg-blue-50 text-blue-800",
@@ -119,6 +118,9 @@ const Banner = ({ kind = "info", children }) => {
     )
 }
 
+// ------------------------------
+// Componente principal
+// ------------------------------
 export default function PatientAppointments() {
     const user = getUserFromToken()
     const patientId = user?.id
@@ -166,8 +168,8 @@ export default function PatientAppointments() {
             const up = []
             const pa = []
             for (const a of all || []) {
-                const start = parseAsGYE(a.start_at)
-                const end = parseAsGYE(a.end_at)
+                const start = parseAny(a.start_at) // naive->UTC, con Z respeta
+                const end = parseAny(a.end_at)
 
                 const item = {
                     ...a,
@@ -179,9 +181,9 @@ export default function PatientAppointments() {
                 if (end >= now) up.push(item)
                 else pa.push(item)
             }
-            // Orden estable
-            up.sort((a, b) => parseAsGYE(a.start_at) - parseAsGYE(b.start_at))
-            pa.sort((a, b) => parseAsGYE(b.start_at) - parseAsGYE(a.start_at))
+            // Orden estable (con el mismo parse)
+            up.sort((a, b) => parseAny(a.start_at) - parseAny(b.start_at))
+            pa.sort((a, b) => parseAny(b.start_at) - parseAny(a.start_at))
 
             setUpcoming(up)
             setPast(pa)
@@ -206,7 +208,7 @@ export default function PatientAppointments() {
         await fetchDaySlots(appt.doctor_id, ymd, appt)
     }
 
-    // Cargar slots del día (en GYE) aplicando margen mínimo y excluyendo ocupados/bloqueados
+    // Cargar slots del día (en GYE) aplicando margen y excluyendo ocupados/bloqueados
     const fetchDaySlots = async (doctorId, ymd, currentAppt = resAppt) => {
         setSlotsLoading(true)
         setSlotsMsg({ type: "info", text: "Buscando horarios disponibles…" })
@@ -216,7 +218,7 @@ export default function PatientAppointments() {
             const from = startOfDayGYE(ymd).toISOString()
             const to = endOfDayGYE(ymd).toISOString()
 
-            // 1) Slots del día
+            // 1) Slots del día (vienen con Z)
             const qsSlots = new URLSearchParams({
                 doctor_id: String(doctorId),
                 date_from: from,
@@ -224,7 +226,7 @@ export default function PatientAppointments() {
             }).toString()
             const resSlots = await apiGet(`/availability/slots?${qsSlots}`)
 
-            // 2) Citas/bloqueos del doctor en esa ventana
+            // 2) Citas/bloqueos del doctor en esa ventana (naive -> UTC)
             let appts = []
             try {
                 const qsAppts = new URLSearchParams({
@@ -250,13 +252,16 @@ export default function PatientAppointments() {
                 })
                 .map((a) => ({ start: a.start_at, end: a.end_at }))
 
-            // 3) Filtros: margen + excluir el propio horario + excluir ocupados
+            // 3) Filtros: margen + excluir el propio horario + excluir ocupados (mezclando TZ correctamente)
             const minStart = new Date(now.getTime() + DEFAULT_LEAD_MINUTES * 60000)
             const filtered = (resSlots || []).filter((s) => {
-                const st = parseAsGYE(s.start_at)
+                const st = parseAny(s.start_at) // slot con Z -> ok
                 if (st < minStart) return false
-                if (currentAppt && s.start_at === currentAppt.start_at && s.end_at === currentAppt.end_at) return false
-                if (blockers.some((b) => overlaps(s.start_at, s.end_at, b.start, b.end))) return false
+                if (currentAppt && overlapsMixed(s.start_at, s.end_at, currentAppt.start_at, currentAppt.end_at)) {
+                    // mismo intervalo que la cita actual => descártalo
+                    return false
+                }
+                if (blockers.some((b) => overlapsMixed(s.start_at, s.end_at, b.start, b.end))) return false
                 return true
             })
 
@@ -273,9 +278,7 @@ export default function PatientAppointments() {
         } finally {
             if (isMounted) setSlotsLoading(false)
         }
-        return () => {
-            isMounted = false
-        }
+        return () => { isMounted = false }
     }
 
     // Click en un slot => reagendar
