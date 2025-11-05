@@ -26,7 +26,7 @@ const addDays = (date, days) => {
 // ¿El string trae zona (Z o ±HH:MM)?
 const hasTZ = (s) => /Z$|[+\-]\d{2}:\d{2}$/.test(s || "")
 
-/** 
+/**
  * Interpreta ISO como:
  * - si trae Z/offset => respeta offset
  * - si NO trae zona => forzamos -05:00 (GYE, sin DST)
@@ -37,7 +37,7 @@ const parseAsGYE = (iso) => {
     return new Date(normalized)
 }
 
-// Epoch ms seguro (independiente de zona)
+// Epoch ms seguro (independiente de zona) usando "GYE" (para render y ordenado visual)
 const toMs = (iso) => parseAsGYE(iso)?.getTime() ?? NaN
 
 // Ahora (pared horaria de GYE) para mostrar/debug
@@ -103,13 +103,23 @@ function chunkRanges(from, to, maxDays = 31) {
     return chunks
 }
 
-// Solape de intervalos [start,end) usando epoch ms
-function overlaps(aStartISO, aEndISO, bStartISO, bEndISO) {
-    const a1 = toMs(aStartISO)
-    const a2 = toMs(aEndISO)
-    const b1 = toMs(bStartISO)
-    const b2 = toMs(bEndISO)
-    return a1 < b2 && b1 < a2
+/* =======================
+ * PARCHE DE SOLAPES (mix TZ)
+ * =======================
+ * /availability/slots viene con Z (UTC) -> usar tal cual.
+ * /appointments viene SIN zona (naive) -> interpretarlo como UTC agregando Z.
+ */
+// Interpreta string ISO como UTC si viene sin zona (caso /appointments actuales)
+const parseAsUTC = (iso) => new Date(hasTZ(iso) ? iso : `${iso}Z`)
+// Interpreta string ISO respetando su zona (caso /availability/slots que ya trae Z)
+const parseWithZone = (iso) => new Date(iso)
+// Solape [start,end) mezclando: slots(Z) vs appointments(naive→UTC)
+const overlapsMixed = (slotStartISO, slotEndISO, apptStartISO, apptEndISO) => {
+    const s1 = parseWithZone(slotStartISO).getTime()
+    const s2 = parseWithZone(slotEndISO).getTime()
+    const a1 = parseAsUTC(apptStartISO).getTime()
+    const a2 = parseAsUTC(apptEndISO).getTime()
+    return s1 < a2 && a1 < s2
 }
 
 export default function PatientSchedule() {
@@ -225,34 +235,30 @@ export default function PatientSchedule() {
                     })
                     .map((a) => ({ start: a.start_at, end: a.end_at }))
 
-                const freeSlots = allSlots.filter((s) => !blockers.some((b) => overlaps(s.start_at, s.end_at, b.start, b.end)))
+                // ⬇️ Aquí usamos el parche de solape “mixed”
+                const freeSlots = allSlots.filter((s) =>
+                    !blockers.some((b) => overlapsMixed(s.start_at, s.end_at, b.start, b.end))
+                )
 
                 if (DEBUG) {
-                    // Debug en consola para entender “en qué hora” está comparando
-                    const fmt = (iso) => ({
-                        iso,
-                        hasTZ: hasTZ(iso),
-                        asMs: toMs(iso),
-                        localGYE: toLocalYMD(iso) + " " + toLocalHM(iso),
-                    })
-
                     console.groupCollapsed("[Schedule DEBUG]")
-                    console.log("Ahora (GYE):", nowInGYE().toISOString(), "→", toLocalYMD(nowInGYE().toISOString()), toLocalHM(nowInGYE().toISOString()))
+                    const nowGYE = nowInGYE().toISOString()
+                    console.log("Ahora (GYE):", nowGYE, "→", toLocalYMD(nowGYE), toLocalHM(nowGYE))
                     console.table((allSlots || []).map(s => ({
                         start_iso: s.start_at, end_iso: s.end_at,
-                        start_ms: toMs(s.start_at), end_ms: toMs(s.end_at),
+                        start_ms: parseWithZone(s.start_at).getTime(), end_ms: parseWithZone(s.end_at).getTime(),
                         start_gye: `${toLocalYMD(s.start_at)} ${toLocalHM(s.start_at)}`,
                         end_gye: `${toLocalYMD(s.end_at)} ${toLocalHM(s.end_at)}`,
                     })))
                     console.table((blockers || []).map(b => ({
                         b_start_iso: b.start, b_end_iso: b.end,
-                        b_start_ms: toMs(b.start), b_end_ms: toMs(b.end),
+                        b_start_ms: parseAsUTC(b.start).getTime(), b_end_ms: parseAsUTC(b.end).getTime(),
                         b_start_gye: `${toLocalYMD(b.start)} ${toLocalHM(b.start)}`,
                         b_end_gye: `${toLocalYMD(b.end)} ${toLocalHM(b.end)}`,
                     })))
                     console.table((freeSlots || []).map(s => ({
                         free_start_iso: s.start_at, free_end_iso: s.end_at,
-                        free_start_ms: toMs(s.start_at), free_end_ms: toMs(s.end_at),
+                        free_start_ms: parseWithZone(s.start_at).getTime(), free_end_ms: parseWithZone(s.end_at).getTime(),
                         free_start_gye: `${toLocalYMD(s.start_at)} ${toLocalHM(s.start_at)}`,
                         free_end_gye: `${toLocalYMD(s.end_at)} ${toLocalHM(s.end_at)}`,
                     })))
@@ -360,7 +366,7 @@ export default function PatientSchedule() {
                 <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs flex items-start gap-2">
                     <Info className="h-4 w-4 mt-0.5" />
                     <div>
-                        <div><strong>DEBUG</strong> activo: comparaciones en <em>epoch ms</em>.</div>
+                        <div><strong>DEBUG</strong> activo: solapes mezclando slots(Z) vs appointments(naive→UTC).</div>
                         <div>Ahora (GYE): {toLocalYMD(nowInGYE().toISOString())} {toLocalHM(nowInGYE().toISOString())}</div>
                     </div>
                 </div>
