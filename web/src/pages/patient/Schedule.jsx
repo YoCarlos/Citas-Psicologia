@@ -3,7 +3,7 @@ import React from "react"
 import MonthCalendar, { toYMD } from "../../components/MonthCalendar"
 import { apiGet } from "../../lib/api"
 import { getUserFromToken } from "../../lib/auth"
-import { Clock4, ArrowRight } from "lucide-react"
+import { Clock4, ArrowRight, Info } from "lucide-react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 
 // --- utilidades ---
@@ -22,8 +22,38 @@ const addDays = (date, days) => {
     return d
 }
 
+// ===== Normalización de zonas =====
+// ¿El string trae zona (Z o ±HH:MM)?
+const hasTZ = (s) => /Z$|[+\-]\d{2}:\d{2}$/.test(s || "")
+
+/** 
+ * Interpreta ISO como:
+ * - si trae Z/offset => respeta offset
+ * - si NO trae zona => forzamos -05:00 (GYE, sin DST)
+ */
+const parseAsGYE = (iso) => {
+    if (!iso) return null
+    const normalized = hasTZ(iso) ? iso : `${iso}-05:00`
+    return new Date(normalized)
+}
+
+// Epoch ms seguro (independiente de zona)
+const toMs = (iso) => parseAsGYE(iso)?.getTime() ?? NaN
+
+// Ahora (pared horaria de GYE) para mostrar/debug
+const nowInGYE = () => {
+    const y = Number(new Date().toLocaleString("en-CA", { year: "numeric", timeZone: TZ }))
+    const m = Number(new Date().toLocaleString("en-CA", { month: "2-digit", timeZone: TZ }))
+    const d = Number(new Date().toLocaleString("en-CA", { day: "2-digit", timeZone: TZ }))
+    const hh = Number(new Date().toLocaleString("en-CA", { hour: "2-digit", hour12: false, timeZone: TZ }))
+    const mm = Number(new Date().toLocaleString("en-CA", { minute: "2-digit", timeZone: TZ }))
+    const ss = Number(new Date().toLocaleString("en-CA", { second: "2-digit", timeZone: TZ }))
+    return new Date(`${y}-${pad(m)}-${pad(d)}T${pad(hh)}:${pad(mm)}:${pad(ss)}-05:00`)
+}
+
+// Render helpers (siempre en GYE)
 const toLocalHM = (isoString) =>
-    new Date(isoString).toLocaleTimeString("es-EC", {
+    parseAsGYE(isoString).toLocaleTimeString("es-EC", {
         hour: "2-digit",
         minute: "2-digit",
         hour12: false,
@@ -31,17 +61,17 @@ const toLocalHM = (isoString) =>
     })
 
 const getLocalHour = (isoString) =>
-    Number(new Date(isoString).toLocaleString("en-CA", { hour: "2-digit", hour12: false, timeZone: TZ }))
+    Number(parseAsGYE(isoString).toLocaleString("en-CA", { hour: "2-digit", hour12: false, timeZone: TZ }))
 
 const toLocalYMD = (isoString) => {
-    const d = new Date(isoString)
+    const d = parseAsGYE(isoString)
     const y = d.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
     const m = d.toLocaleString("en-CA", { month: "2-digit", timeZone: TZ })
     const day = d.toLocaleString("en-CA", { day: "2-digit", timeZone: TZ })
     return `${y}-${m}-${day}`
 }
 
-// Agrupa slots [{start_at,end_at}] por "YYYY-MM-DD" en TZ local y arma label "HH:MM–HH:MM"
+// Agrupa slots [{start_at,end_at}] por "YYYY-MM-DD" (GYE) y arma label "HH:MM–HH:MM"
 function groupSlotsByDay(slots) {
     const map = {}
     for (const s of slots) {
@@ -56,7 +86,7 @@ function groupSlotsByDay(slots) {
         map[ymd].push({ startISO: s.start_at, endISO: s.end_at, label, isPM })
     }
     for (const k of Object.keys(map)) {
-        map[k].sort((a, b) => new Date(a.startISO) - new Date(b.startISO))
+        map[k].sort((a, b) => toMs(a.startISO) - toMs(b.startISO))
     }
     return map
 }
@@ -73,29 +103,26 @@ function chunkRanges(from, to, maxDays = 31) {
     return chunks
 }
 
-// Solape de intervalos [start,end)
+// Solape de intervalos [start,end) usando epoch ms
 function overlaps(aStartISO, aEndISO, bStartISO, bEndISO) {
-    const a1 = new Date(aStartISO).getTime()
-    const a2 = new Date(aEndISO).getTime()
-    const b1 = new Date(bStartISO).getTime()
-    const b2 = new Date(bEndISO).getTime()
+    const a1 = toMs(aStartISO)
+    const a2 = toMs(aEndISO)
+    const b1 = toMs(bStartISO)
+    const b2 = toMs(bEndISO)
     return a1 < b2 && b1 < a2
 }
 
 export default function PatientSchedule() {
     const nav = useNavigate()
     const [sp] = useSearchParams()
+    const DEBUG = sp.get("debug") === "1"
 
     const user = getUserFromToken()
     const role = user?.role
 
     // doctor_id: prioridad querystring > doctor (si es doctora logueada) > doctor asignado al paciente
     const qsDoctorId = sp.get("doctor_id")
-    const doctorId = qsDoctorId
-        ? Number(qsDoctorId)
-        : role === "doctor"
-            ? user?.id
-            : user?.doctor_id
+    const doctorId = qsDoctorId ? Number(qsDoctorId) : role === "doctor" ? user?.id : user?.doctor_id
 
     const initial = todayYMD()
     const [selected, setSelected] = React.useState(initial)
@@ -112,12 +139,12 @@ export default function PatientSchedule() {
     // 🔒 Filtrar disponibilidad global por margen mínimo (leadMinutes)
     const availMapFiltered = React.useMemo(() => {
         const leadMs = leadMinutes * 60 * 1000
-        const now = new Date()
-        const minStart = new Date(now.getTime() + leadMs)
+        const nowMs = Date.now() // epoch actual del cliente
+        const minStartMs = nowMs + leadMs
 
         const out = {}
         for (const ymd of Object.keys(availMap)) {
-            out[ymd] = (availMap[ymd] || []).filter((s) => new Date(s.startISO) >= minStart)
+            out[ymd] = (availMap[ymd] || []).filter((s) => toMs(s.startISO) >= minStartMs)
         }
         return out
     }, [availMap, leadMinutes])
@@ -147,13 +174,12 @@ export default function PatientSchedule() {
             setLoading(true)
             setErrorMsg("")
             try {
-                // 1) Precio de la doctora (settings/consultation)
+                // 1) Precio (settings/consultation)
                 try {
                     const cfg = await apiGet(`/settings/consultation?doctor_id=${doctorId}`)
                     if (isMounted && cfg?.price_usd != null) setPriceUSD(Number(cfg.price_usd))
-                    // Si quieres usar duration_min para validar longitudes, lo tienes en cfg.duration_min
                 } catch {
-                    // fallback al valor por defecto ya seteado
+                    // fallback
                 }
 
                 // 2) Ventana de fechas a consultar
@@ -183,23 +209,55 @@ export default function PatientSchedule() {
                     }).toString()
                     appts = await apiGet(`/appointments?${q2}`)
                 } catch {
-                    // si falla, no bloqueamos por citas (pero idealmente no debe fallar)
+                    appts = []
                 }
 
-                const now = new Date()
+                const nowMs = Date.now()
                 const blockers = (Array.isArray(appts) ? appts : [])
                     .filter((a) => {
                         const st = (a.status || "").toLowerCase()
                         if (st === "confirmed") return true
                         if (st === "pending" || st === "processing") {
-                            const hu = a.hold_until ? new Date(a.hold_until) : null
-                            return hu && hu > now
+                            const huMs = a.hold_until ? new Date(a.hold_until).getTime() : NaN
+                            return Number.isFinite(huMs) && huMs > nowMs
                         }
                         return false
                     })
                     .map((a) => ({ start: a.start_at, end: a.end_at }))
 
                 const freeSlots = allSlots.filter((s) => !blockers.some((b) => overlaps(s.start_at, s.end_at, b.start, b.end)))
+
+                if (DEBUG) {
+                    // Debug en consola para entender “en qué hora” está comparando
+                    const fmt = (iso) => ({
+                        iso,
+                        hasTZ: hasTZ(iso),
+                        asMs: toMs(iso),
+                        localGYE: toLocalYMD(iso) + " " + toLocalHM(iso),
+                    })
+
+                    console.groupCollapsed("[Schedule DEBUG]")
+                    console.log("Ahora (GYE):", nowInGYE().toISOString(), "→", toLocalYMD(nowInGYE().toISOString()), toLocalHM(nowInGYE().toISOString()))
+                    console.table((allSlots || []).map(s => ({
+                        start_iso: s.start_at, end_iso: s.end_at,
+                        start_ms: toMs(s.start_at), end_ms: toMs(s.end_at),
+                        start_gye: `${toLocalYMD(s.start_at)} ${toLocalHM(s.start_at)}`,
+                        end_gye: `${toLocalYMD(s.end_at)} ${toLocalHM(s.end_at)}`,
+                    })))
+                    console.table((blockers || []).map(b => ({
+                        b_start_iso: b.start, b_end_iso: b.end,
+                        b_start_ms: toMs(b.start), b_end_ms: toMs(b.end),
+                        b_start_gye: `${toLocalYMD(b.start)} ${toLocalHM(b.start)}`,
+                        b_end_gye: `${toLocalYMD(b.end)} ${toLocalHM(b.end)}`,
+                    })))
+                    console.table((freeSlots || []).map(s => ({
+                        free_start_iso: s.start_at, free_end_iso: s.end_at,
+                        free_start_ms: toMs(s.start_at), free_end_ms: toMs(s.end_at),
+                        free_start_gye: `${toLocalYMD(s.start_at)} ${toLocalHM(s.start_at)}`,
+                        free_end_gye: `${toLocalYMD(s.end_at)} ${toLocalHM(s.end_at)}`,
+                    })))
+                    console.groupEnd()
+                }
 
                 if (isMounted) setAvailMap(groupSlotsByDay(freeSlots))
             } catch (err) {
@@ -213,7 +271,7 @@ export default function PatientSchedule() {
         return () => {
             isMounted = false
         }
-    }, [doctorId])
+    }, [doctorId, sp]) // incluye sp para que cambiar ?debug=1 reactive la carga
 
     // toggle de selección
     const keyOf = (s) => `${s.startISO}|${s.endISO}`
@@ -234,7 +292,7 @@ export default function PatientSchedule() {
         for (const ymd of Object.keys(availMapFiltered)) {
             const daySlots = (availMapFiltered[ymd] || []).filter((s) => picked.has(keyOf(s)))
             if (daySlots.length) {
-                const sorted = [...daySlots].sort((a, b) => new Date(a.startISO) - new Date(b.startISO))
+                const sorted = [...daySlots].sort((a, b) => toMs(a.startISO) - toMs(b.startISO))
                 out.push({ ymd, slots: sorted })
             }
         }
@@ -249,7 +307,6 @@ export default function PatientSchedule() {
     }, [picked, availMapFiltered, selected, selectedSlots])
 
     const pickedCount = React.useMemo(() => Array.from(picked).length, [picked])
-
     const totalUSD = React.useMemo(() => (pickedCount * Number(priceUSD)).toFixed(2), [pickedCount, priceUSD])
 
     const onNext = () => {
@@ -262,8 +319,6 @@ export default function PatientSchedule() {
             },
         })
     }
-
-    const clearPicked = () => setPicked(new Set())
 
     const Section = ({ title, count, children }) => (
         <div className="mt-4">
@@ -299,6 +354,17 @@ export default function PatientSchedule() {
                 <h1 className="text-2xl font-bold text-emerald-800">Agendar cita</h1>
                 <p className="text-gray-600">Selecciona uno o varios horarios; abajo verás tu selección y el total.</p>
             </div>
+
+            {/* Banner DEBUG opcional */}
+            {DEBUG && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs flex items-start gap-2">
+                    <Info className="h-4 w-4 mt-0.5" />
+                    <div>
+                        <div><strong>DEBUG</strong> activo: comparaciones en <em>epoch ms</em>.</div>
+                        <div>Ahora (GYE): {toLocalYMD(nowInGYE().toISOString())} {toLocalHM(nowInGYE().toISOString())}</div>
+                    </div>
+                </div>
+            )}
 
             {/* Calendario */}
             <MonthCalendar value={selected} onChange={setSelected} badges={badges} locale="es-EC" minDate={todayYMD()} />
@@ -372,7 +438,9 @@ export default function PatientSchedule() {
                 <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                     <div className="text-sm text-gray-700">
                         {pickedCount} {pickedCount === 1 ? "slot" : "slots"} × ${Number(priceUSD).toFixed(2)} ={" "}
-                        <span className="font-semibold text-emerald-700">${totalUSD}</span>
+                        <span className="font-semibold text-emerald-700">
+                            {(pickedCount * Number(priceUSD)).toFixed(2)}
+                        </span>
                     </div>
 
                     <div className="flex gap-2">

@@ -11,21 +11,20 @@ const TZ = "America/Guayaquil"
 const pad = (n) => String(n).padStart(2, "0")
 const DEFAULT_LEAD_MINUTES = 60 // margen mínimo para mostrar slots al reagendar (1 hora)
 
+// --- helpers de fecha/hora (robustos con/ sin Z) ---
+const hasTZ = (s) => /Z$|[+\-]\d{2}:\d{2}$/.test(s || "")
+
 /**
- * Muchas APIs devuelven "YYYY-MM-DDTHH:MM:SS" **sin zona**.
- * Esta función **interpreta** ese string como hora local de Guayaquil.
- * Si ya viene con Z / offset, respeta el offset.
+ * Si viene con Z u offset -> respeta el offset.
+ * Si NO viene con zona -> interprétalo como hora local GYE anexando -05:00.
  */
 const parseAsGYE = (iso) => {
     if (!iso) return null
-    if ((iso.includes("Z") || iso.includes("+") || iso.includes("-")) && iso.length > 19) {
-        return new Date(iso) // ya tiene zona
-    }
-    // Forzar interpretación como GYE anexando -05:00 (Ecuador sin DST)
-    return new Date(`${iso}-05:00`)
+    const normalized = hasTZ(iso) ? iso : `${iso}-05:00`
+    return new Date(normalized)
 }
 
-// YYYY-MM-DD desde ISO (interpretado como GYE)
+// YYYY-MM-DD desde ISO (interpretado/renderizado en GYE)
 const toLocalYMD = (iso) => {
     const d = parseAsGYE(iso)
     const y = d.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
@@ -34,7 +33,7 @@ const toLocalYMD = (iso) => {
     return `${y}-${m}-${day}`
 }
 
-// HH:MM 24h desde ISO (interpretado como GYE)
+// HH:MM 24h desde ISO (interpretado/renderizado en GYE)
 const toLocalHM = (iso) =>
     parseAsGYE(iso).toLocaleTimeString("es-EC", {
         hour: "2-digit",
@@ -47,7 +46,7 @@ const toLocalHM = (iso) =>
 const startOfDayGYE = (ymd) => new Date(`${ymd}T00:00:00-05:00`)
 const endOfDayGYE = (ymd) => new Date(`${ymd}T23:59:59-05:00`)
 
-// "Ahora" en GYE como Date (con la pared horaria de GYE)
+// "Ahora" en GYE como Date (pared horaria GYE)
 const nowInGYE = () => {
     const y = Number(new Date().toLocaleString("en-CA", { year: "numeric", timeZone: TZ }))
     const m = Number(new Date().toLocaleString("en-CA", { month: "2-digit", timeZone: TZ }))
@@ -58,7 +57,16 @@ const nowInGYE = () => {
     return new Date(`${y}-${pad(m)}-${pad(d)}T${pad(hh)}:${pad(mm)}:${pad(ss)}-05:00`)
 }
 
-// Habilitar “Unirse” 5 minutos antes (usando GYE para pared horaria)
+// overlap [start,end)
+const overlaps = (aStartISO, aEndISO, bStartISO, bEndISO) => {
+    const a1 = parseAsGYE(aStartISO).getTime()
+    const a2 = parseAsGYE(aEndISO).getTime()
+    const b1 = parseAsGYE(bStartISO).getTime()
+    const b2 = parseAsGYE(bEndISO).getTime()
+    return a1 < b2 && b1 < a2
+}
+
+// Habilitar “Unirse” 5 minutos antes (en GYE)
 const canJoinNow = (startISO, endISO) => {
     const now = nowInGYE()
     const start = parseAsGYE(startISO)
@@ -66,7 +74,7 @@ const canJoinNow = (startISO, endISO) => {
     return now >= new Date(start.getTime() - 5 * 60000) && now <= end
 }
 
-// Regla de reagendar: >= 4 horas antes del inicio (todo en GYE)
+// Regla de reagendar: >= 4 horas antes del inicio (en GYE)
 const canReschedule = (startISO) => {
     const now = nowInGYE()
     const start = parseAsGYE(startISO)
@@ -128,8 +136,8 @@ export default function PatientAppointments() {
     const [slotsLoading, setSlotsLoading] = React.useState(false)
     const [slotsMsg, setSlotsMsg] = React.useState({ type: "", text: "" }) // info | success | error
 
-    // Margen de antelación para mostrar slots al reagendar
-    const [leadMinutes, setLeadMinutes] = React.useState(DEFAULT_LEAD_MINUTES)
+    // Margen de antelación para mostrar slots al reagendar (sin /settings/booking)
+    const [leadMinutes] = React.useState(DEFAULT_LEAD_MINUTES)
 
     // ---- Helpers de razones de bloqueo (tooltips y texto visible)
     const getRescheduleDisabledReason = (appt) => {
@@ -195,23 +203,10 @@ export default function PatientAppointments() {
         const ymd = toLocalYMD(appt.start_at)
         setPickDay(ymd)
         setModalOpen(true)
-
-        // (Opcional) cargar margen lead desde settings/booking de la doctora
-        try {
-            const bookingCfg = await apiGet(`/settings/booking?doctor_id=${appt.doctor_id}`)
-            if (bookingCfg?.min_lead_minutes != null) {
-                setLeadMinutes(Number(bookingCfg.min_lead_minutes) || DEFAULT_LEAD_MINUTES)
-            } else {
-                setLeadMinutes(DEFAULT_LEAD_MINUTES)
-            }
-        } catch {
-            setLeadMinutes(DEFAULT_LEAD_MINUTES)
-        }
-
         await fetchDaySlots(appt.doctor_id, ymd, appt)
     }
 
-    // Cargar slots del día (en GYE) aplicando margen mínimo y excluyendo el propio horario
+    // Cargar slots del día (en GYE) aplicando margen mínimo y excluyendo ocupados/bloqueados
     const fetchDaySlots = async (doctorId, ymd, currentAppt = resAppt) => {
         setSlotsLoading(true)
         setSlotsMsg({ type: "info", text: "Buscando horarios disponibles…" })
@@ -220,21 +215,48 @@ export default function PatientAppointments() {
         try {
             const from = startOfDayGYE(ymd).toISOString()
             const to = endOfDayGYE(ymd).toISOString()
-            const qs = new URLSearchParams({
+
+            // 1) Slots del día
+            const qsSlots = new URLSearchParams({
                 doctor_id: String(doctorId),
                 date_from: from,
                 date_to: to,
             }).toString()
-            const res = await apiGet(`/availability/slots?${qs}`)
+            const resSlots = await apiGet(`/availability/slots?${qsSlots}`)
 
-            // Filtrar con margen mínimo (lead)
+            // 2) Citas/bloqueos del doctor en esa ventana
+            let appts = []
+            try {
+                const qsAppts = new URLSearchParams({
+                    doctor_id: String(doctorId),
+                    date_from: from,
+                    date_to: to,
+                }).toString()
+                appts = await apiGet(`/appointments?${qsAppts}`)
+            } catch {
+                appts = []
+            }
+
             const now = nowInGYE()
-            const minStart = new Date(now.getTime() + leadMinutes * 60000)
+            const blockers = (Array.isArray(appts) ? appts : [])
+                .filter((a) => {
+                    const st = (a.status || "").toLowerCase()
+                    if (st === "confirmed") return true
+                    if (st === "pending" || st === "processing") {
+                        const hu = a.hold_until ? new Date(a.hold_until) : null
+                        return hu && hu > now
+                    }
+                    return false
+                })
+                .map((a) => ({ start: a.start_at, end: a.end_at }))
 
-            const filtered = (res || []).filter((s) => {
+            // 3) Filtros: margen + excluir el propio horario + excluir ocupados
+            const minStart = new Date(now.getTime() + DEFAULT_LEAD_MINUTES * 60000)
+            const filtered = (resSlots || []).filter((s) => {
                 const st = parseAsGYE(s.start_at)
-                if (st < minStart) return false // ⛔️ no mostrar si empieza en < leadMinutes
+                if (st < minStart) return false
                 if (currentAppt && s.start_at === currentAppt.start_at && s.end_at === currentAppt.end_at) return false
+                if (blockers.some((b) => overlaps(s.start_at, s.end_at, b.start, b.end))) return false
                 return true
             })
 
@@ -242,8 +264,8 @@ export default function PatientAppointments() {
             setDaySlots(filtered)
             setSlotsMsg(
                 filtered.length
-                    ? { type: "info", text: `Elige un nuevo horario. *Se requiere al menos ${leadMinutes} minuto(s) de antelación.*` }
-                    : { type: "info", text: `No hay horarios disponibles en esta fecha con al menos ${leadMinutes} minuto(s) de antelación.` }
+                    ? { type: "info", text: `Elige un nuevo horario. *Se requiere al menos ${DEFAULT_LEAD_MINUTES} minuto(s) de antelación.*` }
+                    : { type: "info", text: `No hay horarios disponibles en esta fecha con al menos ${DEFAULT_LEAD_MINUTES} minuto(s) de antelación.` }
             )
         } catch (e) {
             if (!isMounted) return
@@ -251,13 +273,9 @@ export default function PatientAppointments() {
         } finally {
             if (isMounted) setSlotsLoading(false)
         }
-        return () => { isMounted = false }
-    }
-
-    const onPickDayChange = async (e) => {
-        const ymd = e.target.value
-        setPickDay(ymd)
-        if (resAppt) await fetchDaySlots(resAppt.doctor_id, ymd, resAppt)
+        return () => {
+            isMounted = false
+        }
     }
 
     // Click en un slot => reagendar
@@ -309,9 +327,7 @@ export default function PatientAppointments() {
                     <div className="mt-4 text-sm text-gray-500">Cargando…</div>
                 ) : (
                     <div className="mt-4 divide-y">
-                        {upcoming.length === 0 && (
-                            <div className="text-sm text-gray-500">Sin próximas citas.</div>
-                        )}
+                        {upcoming.length === 0 && <div className="text-sm text-gray-500">Sin próximas citas.</div>}
                         {upcoming.map((a) => {
                             const reschDisabled = !a.canReschedule
                             const reschReason = getRescheduleDisabledReason(a)
@@ -323,7 +339,7 @@ export default function PatientAppointments() {
                                 <div key={a.id} className="py-3">
                                     <div className="flex items-center justify-between">
                                         <div>
-                                            {/* Fecha y hora con estilos distintos */}
+                                            {/* Fecha y hora (formateadas en GYE) */}
                                             <div className="font-medium">
                                                 <span className="text-gray-800">{a.ymd}</span>{" "}
                                                 <span className="text-blue-700 font-mono tabular-nums">{a.timeLabel}</span>
@@ -336,9 +352,7 @@ export default function PatientAppointments() {
                                                 disabled={reschDisabled}
                                                 className={[
                                                     "px-3 py-1.5 rounded-lg border text-sm inline-flex items-center gap-2",
-                                                    reschDisabled
-                                                        ? "text-gray-400 cursor-not-allowed opacity-60"
-                                                        : "text-gray-700 hover:bg-gray-50",
+                                                    reschDisabled ? "text-gray-400 cursor-not-allowed opacity-60" : "text-gray-700 hover:bg-gray-50",
                                                 ].join(" ")}
                                                 title={reschDisabled ? reschReason : "Reagendar"}
                                                 aria-disabled={reschDisabled ? "true" : "false"}
@@ -351,9 +365,7 @@ export default function PatientAppointments() {
                                                 disabled={joinDisabled}
                                                 className={[
                                                     "px-3 py-1.5 rounded-lg text-sm inline-flex items-center gap-2",
-                                                    joinDisabled
-                                                        ? "bg-gray-200 text-gray-500 cursor-not-allowed"
-                                                        : "bg-blue-700 text-white hover:bg-blue-800",
+                                                    joinDisabled ? "bg-gray-200 text-gray-500 cursor-not-allowed" : "bg-blue-700 text-white hover:bg-blue-800",
                                                 ].join(" ")}
                                                 title={joinDisabled ? joinReason : "Unirse a la sesión"}
                                                 aria-disabled={joinDisabled ? "true" : "false"}
@@ -387,7 +399,7 @@ export default function PatientAppointments() {
                 )}
 
                 <div className="mt-3 text-xs text-gray-500">
-                    * Puedes reagendar hasta 4 horas antes del inicio. Los horarios de cambio requieren {leadMinutes} minuto(s) de antelación como mínimo.
+                    * Puedes reagendar hasta 4 horas antes del inicio. Los horarios de cambio requieren {DEFAULT_LEAD_MINUTES} minuto(s) de antelación como mínimo.
                 </div>
             </div>
 
@@ -398,9 +410,7 @@ export default function PatientAppointments() {
                     <div className="text-sm text-gray-500">{past.length} cita(s)</div>
                 </div>
                 <div className="mt-4 divide-y">
-                    {past.length === 0 && (
-                        <div className="text-sm text-gray-500">No hay citas pasadas.</div>
-                    )}
+                    {past.length === 0 && <div className="text-sm text-gray-500">No hay citas pasadas.</div>}
                     {past.map((a) => (
                         <div key={a.id} className="py-3 flex items-center justify-between">
                             <div>
@@ -430,7 +440,7 @@ export default function PatientAppointments() {
                 title="Reagendar cita"
                 footer={
                     <div className="text-xs text-gray-500">
-                        Solo puedes reagendar hasta 4 horas antes del inicio. Los horarios disponibles respetan un margen mínimo de {leadMinutes} minuto(s) de antelación.
+                        Solo puedes reagendar hasta 4 horas antes del inicio. Los horarios disponibles respetan un margen mínimo de {DEFAULT_LEAD_MINUTES} minuto(s) de antelación.
                     </div>
                 }
             >
@@ -462,18 +472,17 @@ export default function PatientAppointments() {
                                 type="date"
                                 className="px-3 py-2 rounded-lg border text-sm"
                                 value={pickDay}
-                                onChange={onPickDayChange}
+                                onChange={(e) => {
+                                    const ymd = e.target.value
+                                    setPickDay(ymd)
+                                    if (resAppt) fetchDaySlots(resAppt.doctor_id, ymd, resAppt)
+                                }}
                                 min={toLocalYMD(nowInGYE().toISOString())}
                             />
                         </div>
 
                         {slotsMsg.text && (
-                            <Banner
-                                kind={
-                                    slotsMsg.type === "success" ? "success" :
-                                        slotsMsg.type === "error" ? "error" : "info"
-                                }
-                            >
+                            <Banner kind={slotsMsg.type === "success" ? "success" : slotsMsg.type === "error" ? "error" : "info"}>
                                 {slotsMsg.text}
                             </Banner>
                         )}
@@ -486,7 +495,7 @@ export default function PatientAppointments() {
                                 <>
                                     {daySlots.length === 0 ? (
                                         <div className="text-sm text-gray-500">
-                                            No hay horarios disponibles con al menos {leadMinutes} minuto(s) de antelación.
+                                            No hay horarios disponibles con al menos {DEFAULT_LEAD_MINUTES} minuto(s) de antelación.
                                         </div>
                                     ) : (
                                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
