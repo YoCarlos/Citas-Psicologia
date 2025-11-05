@@ -1,7 +1,7 @@
 # app/routers/availability.py
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, and_
 from typing import List
 from datetime import datetime, timedelta, time as dtime, timezone
 
@@ -16,6 +16,45 @@ from ..utils.tz import (
 )
 
 router = APIRouter(prefix="/availability", tags=["availability"])
+
+
+def delete_stale_holds(db: Session) -> int:
+    """
+    Elimina appointments en 'pending'/'processing' cuyo hold_until ya venció.
+    Devuelve la cantidad de filas borradas.
+    """
+    now_utc = datetime.now(timezone.utc)
+    status_processing = getattr(models.AppointmentStatus, "processing", models.AppointmentStatus.pending)
+
+    # Tomamos los IDs primero para poder cancelar recordatorios si usas scheduler
+    stale_ids = list(
+        db.scalars(
+            select(models.Appointment.id).where(
+                and_(
+                    models.Appointment.status.in_([models.AppointmentStatus.pending, status_processing]),
+                    models.Appointment.hold_until.is_not(None),
+                    models.Appointment.hold_until < now_utc,
+                )
+            )
+        )
+    )
+    if not stale_ids:
+        return 0
+
+    # Si tienes scheduler/cancel_reminder_job aquí podrías importarlo y cancelarlo.
+    # from ..scheduler import cancel_reminder_job
+    # for appt_id in stale_ids:
+    #     try: cancel_reminder_job(appt_id)
+    #     except Exception: pass
+
+    # Borrado real
+    for appt_id in stale_ids:
+        a = db.get(models.Appointment, appt_id)
+        if a:
+            db.delete(a)
+    db.commit()
+    return len(stale_ids)
+
 
 # ==========================
 # 1) ENDPOINTS: SLOTS CONCRETOS
@@ -59,6 +98,9 @@ def list_slots(
     skip: int = 0,
     limit: int = Query(200, le=500)
 ):
+    # 🧹 Opcional: limpia holds vencidos (por coherencia con paneles que inspeccionan slots)
+    delete_stale_holds(db)
+
     stmt = select(models.AvailabilitySlot).order_by(models.AvailabilitySlot.start_at.asc())
     if doctor_id:
         stmt = stmt.where(models.AvailabilitySlot.doctor_id == doctor_id)
@@ -222,6 +264,9 @@ def get_available_slots(
     duration_min: int | None = Query(None, ge=10, le=240),
     db: Session = Depends(get_db),
 ):
+    # 🧹 Limpia holds vencidos para que no “bloqueen” falsamente la agenda
+    delete_stale_holds(db)
+
     # 1) Normalizar rango solicitado a UTC aware
     #    - naive => se asume Ecuador y se convierte a UTC
     df_aware = to_utc(date_from)
@@ -343,7 +388,7 @@ def get_available_slots(
                                 break
 
                     if not conflict:
-                        # Responder como UTC aware para que el front muestre Ecuador
+                        # Responder como UTC aware (el front ya renderiza en GYE)
                         results.append(
                             schemas.AvailableSlotOut(
                                 doctor_id=doctor_id,

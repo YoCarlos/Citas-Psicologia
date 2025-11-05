@@ -19,7 +19,47 @@ from ..utils.tz import to_utc, iso_utc_z
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
 # --- Constantes ---
-BLOCKING_STATES = ["pending", "confirmed"]
+BLOCKING_STATES = ["pending", "confirmed"]  # 'processing' se maneja explícitamente más abajo
+
+
+
+def delete_stale_holds(db: Session) -> int:
+    """
+    Elimina de la tabla appointments todos los registros en 'pending' o 'processing'
+    cuyo hold_until ya venció (hold_until < now()).
+    Devuelve la cantidad de filas afectadas.
+    """
+    now_utc = datetime.now(timezone.utc)
+
+    # Si tu Enum no tiene 'processing', getattr devuelve 'pending' para no fallar.
+    status_processing = getattr(models.AppointmentStatus, "processing", models.AppointmentStatus.pending)
+
+    ids = list(
+        db.scalars(
+            select(models.Appointment.id).where(
+                and_(
+                    models.Appointment.status.in_([models.AppointmentStatus.pending, status_processing]),
+                    models.Appointment.hold_until.is_not(None),
+                    models.Appointment.hold_until < now_utc,
+                )
+            )
+        )
+    )
+    if not ids:
+        return 0
+
+    for appt_id in ids:
+        a = db.get(models.Appointment, appt_id)
+        if a:
+            # Por si acaso hay recordatorios programados:
+            try:
+                cancel_reminder_job(a.id)
+            except Exception:
+                pass
+            db.delete(a)
+
+    db.commit()
+    return len(ids)
 
 
 # --- Helper: solape en UTC ---
@@ -210,6 +250,9 @@ def list_appts(
     skip: int = 0,
     limit: int = Query(200, le=500),
 ):
+    # 🧹 Limpia holds vencidos antes de listar
+    delete_stale_holds(db)
+
     stmt = select(models.Appointment).order_by(models.Appointment.start_at.asc())
     if doctor_id:
         stmt = stmt.where(models.Appointment.doctor_id == doctor_id)
@@ -283,6 +326,9 @@ def hold_appointments(
 ):
     if current.role != models.UserRole.patient:
         raise HTTPException(403, detail="Solo pacientes pueden bloquear horarios")
+
+    # 🧹 Limpia holds vencidos antes de intentar crear nuevos
+    delete_stale_holds(db)
 
     doc = db.get(models.User, payload.doctor_id)
     if not doc or doc.role != models.UserRole.doctor:
@@ -407,6 +453,9 @@ async def confirm_appt(
     bg: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
+    # 🧹 Limpia holds vencidos antes de confirmar
+    delete_stale_holds(db)
+
     appt = db.get(models.Appointment, id)
     if not appt:
         raise HTTPException(404, detail="No encontrado")
@@ -473,6 +522,9 @@ async def reschedule_appt(
     current = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # 🧹 Limpia holds vencidos antes de reagendar
+    delete_stale_holds(db)
+
     appt = db.get(models.Appointment, id)
     if not appt:
         raise HTTPException(404, "No encontrado")
