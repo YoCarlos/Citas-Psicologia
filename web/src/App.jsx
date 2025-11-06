@@ -88,7 +88,7 @@ export default function App() {
             }
           />
           <Route
-            path="/paciente/checkout"
+            path="/checkout"
             element={
               <PatientCheckOut>
                 <PatientSettings />
