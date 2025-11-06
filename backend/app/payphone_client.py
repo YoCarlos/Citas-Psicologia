@@ -24,7 +24,7 @@ def confirm_button(*, transaction_id: int, client_tx_id: str) -> Dict[str, Any]:
 
     payload = {"id": transaction_id, "clientTxId": client_tx_id}
     headers = {
-        "Authorization": f"Bearer SOipHLWpcsCZrl6bXr3VyF0Oig8G7rYHDFOAJFIDKBKPhJ4X5tubRPz2jOQeHW8lWgDEDMuIlfdDyqGPo1riCZ7iiYECuxJUjqj913fmqBSZsLKD2EbICb208mTrD3hzg5Ios1AFMSlqCWZz8CWjQ1Zn_mv4ctOLAiZtt60Un416i0Ec4teaTAk1U2H2Spgj_usDNecPQyVQA51kEqoSHL_pjHSZ6tHFya0vayelk38wRQE5wV4AjuDjMVBLT7Tuuz-y8WmxIJ478XVZEUH6G6CxDdAT5DYE43guQ9tVmjiOzOhekjpt_nY2wMF10duKjIeYSg",
+        "Authorization": f"Bearer {private_token}",
         "Content-Type": "application/json",
     }
 
