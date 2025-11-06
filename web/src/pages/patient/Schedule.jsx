@@ -317,7 +317,7 @@ export default function PatientSchedule() {
 
     const onNext = () => {
         const items = pickedList.flatMap((group) => group.slots.map((s) => ({ start_at: s.startISO, end_at: s.endISO })))
-        nav("/checkout", {
+        nav("/paciente/checkout", {
             state: {
                 doctorId,
                 priceUSD,
@@ -464,7 +464,7 @@ export default function PatientSchedule() {
                             type="button"
                             onClick={() => {
                                 const items = pickedList.flatMap((group) => group.slots.map((s) => ({ start_at: s.startISO, end_at: s.endISO })))
-                                nav("/checkout", {
+                                nav("/paciente/checkout", {
                                     state: { doctorId, priceUSD, items },
                                 })
                             }}
