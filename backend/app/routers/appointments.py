@@ -1,9 +1,10 @@
 # app/routers/appointments.py
+import secrets
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, select, and_
 from typing import List, Optional
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from ..db import get_db
 from .. import models, schemas
@@ -365,6 +366,9 @@ def hold_appointments(
         )
     )
 
+    # 🔐 Generar un client_tx_id único para este HOLD (se usará en PayPhone y para confirmar)
+    client_tx_id = f"hold-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+
     to_create: list[models.Appointment] = []
     for s in payload.slots:
         s_start = to_utc(s.start_at)
@@ -397,6 +401,7 @@ def hold_appointments(
             status=models.AppointmentStatus.pending,
             method=models.PaymentMethod.payphone,
             hold_until=hold_until,
+            client_tx_id=client_tx_id,  # ⬅️ guardar el vínculo con la transacción
         )
         to_create.append(appt)
 
@@ -437,7 +442,11 @@ def hold_appointments(
     for a in to_create:
         db.refresh(a)
 
-    return schemas.AppointmentHoldOut(appointments=to_create)
+    # ⬅️ Devolvemos el client_tx_id + las citas en formato de salida
+    return {
+        "client_tx_id": client_tx_id,
+        "appointments": [schemas.AppointmentOut.model_validate(a) for a in to_create],
+    }
 
 
 # --- Confirmación (post-pago) ---

@@ -203,26 +203,31 @@ class Appointment(Base):
         DateTime(timezone=True), server_default=text("now()"), nullable=False
     )
 
+    client_tx_id: Mapped[Optional[str]] = mapped_column(String(120), index=True)
+
 
 class Payment(Base):
     __tablename__ = "payments"
 
-    appointment_id: Mapped[int] = mapped_column(
-        Integer,
-        ForeignKey("appointments.id", ondelete="CASCADE"),
-        primary_key=True,
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    appointment_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("appointments.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    method: Mapped[PaymentMethod] = mapped_column(
-        Enum(PaymentMethod, name="payment_method"),
-        nullable=False,
-    )
-    payphone_id: Mapped[Optional[str]] = mapped_column(String(120))
-    confirmed_by_doctor: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)
+    method: Mapped[str] = mapped_column(String(30), nullable=False)  # "payphone"
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    payphone_tx_id: Mapped[str] = mapped_column(String(60), nullable=False, index=True)  # transactionId como string
+    client_tx_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
+    raw_payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("now()"), nullable=False
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    appointment: Mapped[Optional["Appointment"]] = relationship("Appointment", backref="payments")
+
+    __table_args__ = (
+        UniqueConstraint("payphone_tx_id", name="uq_payment_payphone_tx_id"),  # <-- idempotencia  # TODO: alembic
+    )
 
 
 # =========================

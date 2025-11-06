@@ -188,6 +188,7 @@ class AppointmentOut(AppointmentBase):
     hold_until: Optional[datetime] = None
     zoom_meeting_id: Optional[str] = None
     zoom_join_url: Optional[str] = None
+    client_tx_id: Optional[str] = None 
     created_at: datetime
     class Config:
         from_attributes = True
@@ -378,3 +379,18 @@ class CalendarBlockOut(CalendarBlockBase):
 
     class Config:
         from_attributes = True
+
+class PayphoneConfirmIn(BaseModel):
+    id: int
+    clientTxId: str
+
+class PayphoneConfirmOut(BaseModel):
+    transaction_status: str
+    status_code: int
+    transaction_id: int
+    client_tx_id: str
+    amount_cents: int
+    approved: bool
+    confirmed_appointment_ids: list[int] = []
+    payment_id: int | None = None
+    message: str | None = None
