@@ -1,7 +1,6 @@
-// src/pages/patient/PaymentResult.jsx
 import React from "react"
 import { useLocation, useNavigate } from "react-router-dom"
-import { apiPost } from "../../lib/api"
+import { apiGet, apiPost } from "../../lib/api"
 import { getUserFromToken } from "../../lib/auth"
 import { CheckCircle2, XCircle, ArrowLeft, CalendarClock, Info } from "lucide-react"
 
@@ -36,16 +35,32 @@ export default function PaymentResult() {
     const [errorMsg, setErrorMsg] = React.useState("")
     const [okMsg, setOkMsg] = React.useState("")
     const [result, setResult] = React.useState(null) // respuesta cruda backend
-    const [confirmed, setConfirmed] = React.useState([]) // citas confirmadas que devuelve backend
+    const [confirmedAppts, setConfirmedAppts] = React.useState([]) // detalles de citas confirmadas
 
     const goToMyAppts = () => nav("/paciente/citas")
+
+    const fetchApptDetails = React.useCallback(async (ids) => {
+        const safeIds = Array.isArray(ids) ? ids.filter((x) => Number.isFinite(Number(x))) : []
+        if (!safeIds.length) return []
+        const details = await Promise.all(
+            safeIds.map(async (id) => {
+                try {
+                    const a = await apiGet(`/appointments/${id}`)
+                    return a
+                } catch {
+                    return null
+                }
+            })
+        )
+        return details.filter(Boolean)
+    }, [])
 
     const doConfirm = React.useCallback(async () => {
         setLoading(true)
         setErrorMsg("")
         setOkMsg("")
         setResult(null)
-        setConfirmed([])
+        setConfirmedAppts([])
 
         try {
             if (!user?.id) {
@@ -57,42 +72,38 @@ export default function PaymentResult() {
                 return
             }
 
+            const txnIdNum = Number.isFinite(Number(txnIdStr)) ? Number(txnIdStr) : undefined
             const payload = {
-                id: Number.isFinite(Number(txnIdStr)) ? Number(txnIdStr) : txnIdStr,
+                id: txnIdNum ?? txnIdStr,     // el backend espera int; si no es número, se envía como está
                 clientTxId: clientTx,
             }
 
-            // 👉 Llamada central: el backend valida con PayPhone, confirma citas y guarda el pago.
+            // 👉 Llamada central: el backend valida con PayPhone, confirma citas y guarda el pago (idempotente).
             const resp = await apiPost("/payments/payphone/confirm", payload)
             setResult(resp || {})
 
-            const status =
-                resp?.status ||
-                resp?.transaction?.transactionStatus ||
-                resp?.transactionStatus ||
-                "Unknown"
+            const approved = !!resp?.approved
+            const statusText = String(resp?.transaction_status || "").toLowerCase()
 
-            const confirmedFromApi =
-                resp?.appointments_confirmed ||
-                resp?.appointments ||
-                resp?.confirmed ||
-                []
-
-            setConfirmed(Array.isArray(confirmedFromApi) ? confirmedFromApi : [])
-
-            if (String(status).toLowerCase() === "approved") {
-                if (confirmedFromApi?.length > 0) {
+            if (approved) {
+                const ids = resp?.confirmed_appointment_ids || []
+                if (ids.length > 0) {
+                    const details = await fetchApptDetails(ids)
+                    setConfirmedAppts(details)
                     setOkMsg("¡Pago verificado! Tus horarios fueron confirmados ✅")
                 } else {
-                    // Puede ser que ya estaban confirmadas antes, o no aplicaba confirmación múltiple
-                    setOkMsg("Pago verificado. No se detectaron nuevas confirmaciones en esta pantalla.")
+                    // Aprobado pero sin nuevas confirmaciones (posible confirmación previa/idempotente)
+                    setOkMsg(resp?.message || "Pago verificado. No se detectaron nuevas confirmaciones.")
                 }
-            } else if (String(status).toLowerCase() === "pending") {
-                setErrorMsg("Tu pago aún está en proceso. Actualiza más tarde o revisa tus citas.")
-            } else if (String(status).toLowerCase() === "canceled") {
-                setErrorMsg("El pago fue cancelado.")
             } else {
-                setErrorMsg("No pudimos verificar un pago aprobado. Si el cargo existe, contacta soporte.")
+                // No aprobado: pending / canceled / otro
+                if (statusText === "pending") {
+                    setErrorMsg("Tu pago aún está en proceso. Reintenta más tarde o revisa tus citas.")
+                } else if (statusText === "canceled") {
+                    setErrorMsg("El pago fue cancelado.")
+                } else {
+                    setErrorMsg(resp?.message || "No pudimos verificar un pago aprobado. Si el cargo existe, contacta soporte.")
+                }
             }
         } catch (e) {
             console.error("[PaymentResult] confirm error:", e)
@@ -100,33 +111,27 @@ export default function PaymentResult() {
         } finally {
             setLoading(false)
         }
-    }, [clientTx, txnIdStr, user?.id])
+    }, [clientTx, txnIdStr, user?.id, fetchApptDetails])
 
     React.useEffect(() => {
         doConfirm()
     }, [doConfirm])
 
-    const txnFromResp =
-        result?.transaction || result?.payphone || result || null
-
-    const txnIdShown =
-        txnFromResp?.transactionId ||
-        txnFromResp?.id ||
-        txnIdStr ||
-        "—"
-
-    const statusShown =
-        result?.status ||
-        txnFromResp?.transactionStatus ||
-        "—"
+    const txnIdShown = result?.transaction_id || txnIdStr || "—"
+    const statusShown = result?.transaction_status || (result?.approved ? "Approved" : "—")
+    const clientTxShown = result?.client_tx_id || clientTx || "—"
+    const amountShown = Number.isFinite(Number(result?.amount_cents))
+        ? (Number(result.amount_cents) / 100).toFixed(2)
+        : "—"
 
     return (
         <div className="space-y-6">
+            {/* Header */}
             <div className="flex items-start justify-between">
                 <div>
                     <h1 className="text-2xl font-bold text-emerald-800">Resultado del pago</h1>
                     <p className="text-gray-600">
-                        Validando tu transacción y confirmando tus horarios.
+                        Validando tu transacción con PayPhone y confirmando tus horarios.
                     </p>
                 </div>
                 <button
@@ -138,6 +143,7 @@ export default function PaymentResult() {
                 </button>
             </div>
 
+            {/* Card principal */}
             <div className="rounded-2xl bg-white p-5 border shadow-sm">
                 {loading ? (
                     <div className="flex items-center gap-3 text-sm text-gray-600">
@@ -168,24 +174,30 @@ export default function PaymentResult() {
                             </div>
                             <div className="flex items-center gap-2">
                                 <Info className="h-4 w-4" />
-                                <span><strong>Referencia cliente:</strong> {clientTx || "—"}</span>
+                                <span><strong>Referencia cliente (clientTxId):</strong> {clientTxShown}</span>
                             </div>
                             <div className="flex items-center gap-2">
                                 <Info className="h-4 w-4" />
-                                <span><strong>Estado:</strong> {statusShown}</span>
+                                <span><strong>Estado PayPhone:</strong> {statusShown}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Info className="h-4 w-4" />
+                                <span><strong>Monto:</strong> {amountShown === "—" ? "—" : `$${amountShown}`}</span>
                             </div>
                         </div>
 
-                        {/* Citas confirmadas devueltas por el backend */}
+                        {/* Citas confirmadas (si las hay) */}
                         <div className="mt-5">
                             <h3 className="font-semibold text-emerald-900">Citas confirmadas</h3>
-                            {confirmed.length === 0 ? (
+                            {confirmedAppts.length === 0 ? (
                                 <p className="text-sm text-gray-500 mt-1">
-                                    No se confirmaron nuevas citas en esta página.
+                                    {result?.approved
+                                        ? "Pago aprobado. No se detectaron nuevas confirmaciones (puede ser idempotencia o ya estaban confirmadas)."
+                                        : "No hay confirmaciones nuevas."}
                                 </p>
                             ) : (
                                 <ul className="mt-2 space-y-2">
-                                    {confirmed.map((a) => (
+                                    {confirmedAppts.map((a) => (
                                         <li key={a.id} className="text-sm text-gray-800">
                                             <span className="font-mono text-blue-700">
                                                 {toLocalYMD(a.start_at)} {toLocalHM(a.start_at)}–{toLocalHM(a.end_at)}
@@ -198,6 +210,7 @@ export default function PaymentResult() {
                             )}
                         </div>
 
+                        {/* Acciones */}
                         <div className="mt-6 flex items-center gap-3">
                             <button
                                 onClick={goToMyAppts}
@@ -207,7 +220,7 @@ export default function PaymentResult() {
                                 Ir a mis citas
                             </button>
 
-                            {/* Reintentar confirmación (por si el estado cambia de pending→approved) */}
+                            {/* Reintentar verificación (por si pasa de pending→approved) */}
                             <button
                                 onClick={doConfirm}
                                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border hover:bg-gray-50"
