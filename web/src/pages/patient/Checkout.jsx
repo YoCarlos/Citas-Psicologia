@@ -3,13 +3,18 @@ import React from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { apiPost } from "../../lib/api"
 import { getUserFromToken } from "../../lib/auth"
-import { ArrowLeft, ArrowRight, CreditCard, Clock } from "lucide-react"
+import { ArrowLeft, ArrowRight, CreditCard, Clock, Info } from "lucide-react"
 
+// === PayPhone Cajita v1.1 (OFICIAL) ===
+// Docs: https://www.docs.payphone.app/cajita-de-pagos-payphone
+const PAYPHONE_BOX_JS = import.meta.env.VITE_PAYPHONE_BOX_JS || "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.js"
+const PAYPHONE_BOX_CSS = import.meta.env.VITE_PAYPHONE_BOX_CSS || "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.css"
+const PAYPHONE_PUBLIC_TOKEN = import.meta.env.VITE_PAYPHONE_TOKEN || ""           // requerido
+const PAYPHONE_STORE_ID = import.meta.env.VITE_PAYPHONE_STORE_ID || ""           // requerido
 const TZ = "America/Guayaquil"
-const PAYPHONE_SCRIPT = "https://pay.payphonetodoesposible.com/api/button/js"
-const PAYPHONE_PUBLIC_TOKEN = import.meta.env.VITE_PAYPHONE_TOKEN || "TU_TOKEN_PUBLICO"
+const TIMEZONE_OFFSET = -5                                                      // Ecuador (sin DST)
 
-// helpers de fecha
+// helpers de fecha (solo para mostrar)
 const toLocalHM = (isoString) =>
     new Date(isoString).toLocaleTimeString("es-EC", {
         hour: "2-digit",
@@ -44,159 +49,212 @@ export default function Checkout() {
     const { state } = useLocation()
     const user = getUserFromToken()
 
-    // doctor: si viene en el state lo uso, si no, si soy doctor uso mi id, si soy paciente uso el doctor_id
-    const doctorId =
-        state?.doctorId || (user?.role === "doctor" ? user?.id : user?.doctor_id)
-
+    const doctorId = state?.doctorId || (user?.role === "doctor" ? user?.id : user?.doctor_id)
     const priceUSD = Number(state?.priceUSD ?? 0)
     const items = Array.isArray(state?.items) ? state.items : []
+    const totalUSD = items.length * priceUSD
+    const amountCents = Math.round(totalUSD * 100)
 
-    // estado local
+    // estado
     const [holdMinutes] = React.useState(60)
     const [loading, setLoading] = React.useState(false)
     const [okMsg, setOkMsg] = React.useState("")
     const [errorMsg, setErrorMsg] = React.useState("")
     const [payReady, setPayReady] = React.useState(false)
-    const [lastHold, setLastHold] = React.useState(null) // lo que devuelve /appointments/hold
-    const payphoneDivRef = React.useRef(null)
+    const [lastHold, setLastHold] = React.useState(null)
 
-    const total = (items.length * priceUSD).toFixed(2)
+    // Debug mini-panel
+    const [sdkReady, setSdkReady] = React.useState(false)
+    const [sdkLog, setSdkLog] = React.useState([])
+
     const grouped = groupByDay(items)
     const disabled = loading || !doctorId || items.length === 0
 
-    // 1) cargar script de PayPhone una sola vez
-    React.useEffect(() => {
-        const exists = document.querySelector(`script[src="${PAYPHONE_SCRIPT}"]`)
-        if (exists) return
-        const script = document.createElement("script")
-        script.src = PAYPHONE_SCRIPT
-        script.async = true
-        document.body.appendChild(script)
+    const log = React.useCallback((...args) => {
+        console.log("[PAYPHONE]", ...args)
+        setSdkLog((prev) => [...prev, args.map(String).join(" ")].slice(-10))
     }, [])
+
+    // Carga CSS + JS módulo de Cajita v1.1
+    React.useEffect(() => {
+        // CSS
+        if (!document.querySelector(`link[href="${PAYPHONE_BOX_CSS}"]`)) {
+            const link = document.createElement("link")
+            link.rel = "stylesheet"
+            link.href = PAYPHONE_BOX_CSS
+            document.head.appendChild(link)
+            log("CSS agregado:", PAYPHONE_BOX_CSS)
+        }
+
+        // JS (module)
+        if (!document.querySelector(`script[src="${PAYPHONE_BOX_JS}"]`)) {
+            const s = document.createElement("script")
+            s.type = "module"
+            s.src = PAYPHONE_BOX_JS
+            s.onload = () => {
+                log("SDK cargado:", PAYPHONE_BOX_JS)
+                // Algunos navegadores tardan un tick en exponer la clase global
+                setTimeout(() => {
+                    const ok = typeof window.PPaymentButtonBox === "function" || typeof globalThis.PPaymentButtonBox === "function"
+                    setSdkReady(ok)
+                    log("PPaymentButtonBox disponible?", ok)
+                }, 50)
+            }
+            s.onerror = () => {
+                log("ERROR cargando SDK:", PAYPHONE_BOX_JS)
+                setErrorMsg("No se pudo cargar el SDK de pagos de PayPhone.")
+            }
+            document.body.appendChild(s)
+        } else {
+            // Si ya está el script, verificar disponibilidad
+            const ok = typeof window.PPaymentButtonBox === "function" || typeof globalThis.PPaymentButtonBox === "function"
+            setSdkReady(ok)
+            log("SDK ya presente. PPaymentButtonBox disponible?", ok)
+        }
+    }, [log])
 
     const goBack = () => nav(-1)
 
-    // 2) callback cuando PayPhone diga "pago exitoso"
-    const afterPaySuccess = async (payResp) => {
-        // PayPhone puede llamarle distinto en cada integración, intentamos varias claves
-        const payphoneId =
-            payResp?.transactionId ||
-            payResp?.id ||
-            payResp?.payphoneId ||
-            payResp?.paymentId ||
-            "desconocido"
-
-        const clientTx =
-            payResp?.clientTransactionId || payResp?.reference || payResp?.id || null
-
-        if (!lastHold) {
-            setErrorMsg("Pago ok, pero no se encontró la cita bloqueada.")
-            return
-        }
-
-        const appts = lastHold.appointments || []
-        if (!appts.length) {
-            setErrorMsg("Pago ok, pero no hay citas para confirmar.")
-            return
-        }
-
+    // (Opcional) si más adelante usas verificación por callback/redirect del lado servidor,
+    // puedes dejar esto como helper para confirmar & registrar pagos cuando tengas un resultado:
+    const afterPaySuccess = async (payRespOrClientTx) => {
         try {
-            // 1) confirmar cada cita en el backend
+            const appts = lastHold?.appointments || []
+            if (!appts.length) {
+                setErrorMsg("Pago ok, pero no hay citas para confirmar.")
+                return
+            }
+            // Confirmar cada cita
             for (const appt of appts) {
                 await apiPost(`/appointments/${appt.id}/confirm`, {})
             }
-
-            // 2) registrar el pago en /payments usando la primera cita
+            // Registrar pago con la primera cita (ajusta según tu API /payments)
             const apptId = appts[0].id
             await apiPost(`/payments`, {
                 appointment_id: apptId,
                 method: "payphone",
-                payphone_id: payphoneId,
+                // payphone_id: ...,              // cuando lo tengas del backend
+                client_transaction_id: String(payRespOrClientTx ?? ""),
                 confirmed_by_doctor: true,
-                client_transaction_id: clientTx, // opcional si tu backend lo soporta
             })
-
             setOkMsg("Pago registrado y cita(s) confirmada(s) ✅")
             setErrorMsg("")
-            // aquí podrías redirigir:
-            // nav("/paciente/citas")
         } catch (err) {
             console.error(err)
             setErrorMsg("Pago cobrado, pero no se pudo guardar en la API.")
         }
     }
 
-    // 3) función que RENDERIZA la cajita de PayPhone dentro del div
-    const renderPayphoneButton = (amountCents, refText = "cita-psico", holdId = null) => {
-        // script aún no termina de cargar
-        if (!window.payphone) {
-            console.warn("PayPhone aún no está listo")
-            return
+    // Renderiza la Cajita en #pp-button
+    const renderPayphoneBox = React.useCallback((opts) => {
+        const PPB = window.PPaymentButtonBox || globalThis.PPaymentButtonBox
+        if (!PPB) {
+            log("PPaymentButtonBox no disponible todavía.")
+            return false
         }
-        if (!payphoneDivRef.current) return
+        const container = document.getElementById("pp-button")
+        if (!container) {
+            log("Contenedor #pp-button no existe en el DOM")
+            return false
+        }
 
-        // limpiar contenido anterior
-        payphoneDivRef.current.innerHTML = ""
+        // Limpia render previo
+        container.innerHTML = ""
 
-        // que el clientTransactionId se pueda mapear con lo que guardamos en backend
-        const clientTx = holdId ? `hold-${holdId}` : "tx-" + Date.now()
+        try {
+            // Referencia/ID que podrás correlacionar en tu backend
+            const clientTransactionId = opts.clientTransactionId || ("tx-" + Date.now())
 
-        window.payphone
-            .Button({
-                token: PAYPHONE_PUBLIC_TOKEN,
-                amount: amountCents, // en centavos
-                // si el servicio no lleva IVA, dejamos todo en amountWithoutTax
-                amountWithoutTax: amountCents,
-                amountWithTax: 0,
-                reference: refText,
-                clientTransactionId: clientTx,
-                response: (resp) => {
-                    console.log("✅ Pago exitoso PayPhone:", resp)
-                    afterPaySuccess(resp)
-                },
-                error: (err) => {
-                    console.error("❌ Error en pago:", err)
-                    setErrorMsg("No se pudo completar el pago.")
-                },
+            log("Render Cajita →", {
+                host: location.host,
+                amount: opts.amount,
+                storeId: PAYPHONE_STORE_ID,
+                tokenEmpty: !PAYPHONE_PUBLIC_TOKEN,
+                storeEmpty: !PAYPHONE_STORE_ID,
+                clientTransactionId,
             })
-            .render(payphoneDivRef.current.id)
-    }
 
-    // 4) botón "Pagar ahora" → primero llama a tu API para bloquear la cita
+            if (!PAYPHONE_PUBLIC_TOKEN || !PAYPHONE_STORE_ID) {
+                setErrorMsg("Faltan credenciales de PayPhone (TOKEN o STORE_ID).")
+                return false
+            }
+
+            // Montos: si no manejas IVA, usa amountWithoutTax = amount
+            const box = new PPB({
+                token: PAYPHONE_PUBLIC_TOKEN,
+                amount: opts.amount,                 // total en centavos
+                amountWithoutTax: opts.amount,       // todo sin IVA (ajusta si usas impuestos)
+                amountWithTax: 0,
+                tax: 0,
+                service: 0,
+                tip: 0,
+                currency: "USD",
+                storeId: PAYPHONE_STORE_ID,
+                reference: opts.reference || "Cita Psicología",
+                clientTransactionId,
+                defaultMethod: "card",               // "card" o "payphone"
+                timeZone: TIMEZONE_OFFSET,
+                // Datos opcionales del titular si los tienes:
+                // phoneNumber: "+593........",
+                // email: user?.email,
+                // documentId: "...",
+                // identificationType: 1, // 1=CI, 2=RUC, 3=Pasaporte
+                // backgroundColor: "#0ea5e9",
+            }).render("pp-button")
+
+            log("Cajita renderizada ✅")
+            return true
+        } catch (e) {
+            console.error(e)
+            log("Error al renderizar la cajita:", e?.message || e)
+            setErrorMsg("No se pudo inicializar la cajita de pagos.")
+            return false
+        }
+    }, [log])
+
+    // “Pagar ahora” → primero HOLD en backend y luego renderizar cajita
     const confirm = async () => {
         setOkMsg("")
         setErrorMsg("")
         if (disabled) return
         setLoading(true)
         try {
+            // 1) Bloquear los horarios
             const payload = {
                 doctor_id: doctorId,
                 method: "payphone",
                 hold_minutes: holdMinutes,
                 slots: items.map((it) => ({ start_at: it.start_at, end_at: it.end_at })),
             }
+            log("POST /appointments/hold", payload)
 
-            // tu backend: POST /appointments/hold
             const res = await apiPost(`/appointments/hold`, payload)
-
             setLastHold(res)
-            setOkMsg(
-                `¡Listo! Se bloquearon ${(res?.appointments?.length ?? items.length)
-                } horario(s) por ${holdMinutes} minutos. Ahora paga con PayPhone.`
-            )
+
+            const holdCount = res?.appointments?.length ?? items.length
+            setOkMsg(`¡Listo! Se bloquearon ${holdCount} horario(s) por ${holdMinutes} minutos. Carga la cajita para pagar.`)
             setPayReady(true)
 
-            // monto en centavos
-            const amountCents = Math.round(Number(total) * 100)
-            // referencia que se verá en el panel de PayPhone
+            // 2) Render Cajita PayPhone
             const holdId = res?.hold_id || Date.now()
             const refText = `cita-${holdId}`
-            renderPayphoneButton(amountCents, refText, holdId)
+
+            // Espera a que el SDK esté listo
+            if (!sdkReady) {
+                log("SDK aún no listo; reintento en 150 ms…")
+                await new Promise((r) => setTimeout(r, 150))
+            }
+            const ok = renderPayphoneBox({
+                amount: amountCents,
+                reference: refText,
+                clientTransactionId: `hold-${holdId}`,
+            })
+            if (!ok) {
+                setErrorMsg("No se pudo mostrar la cajita de pagos. Revisa consola y credenciales.")
+            }
         } catch (e) {
             console.error(e)
-            setErrorMsg(
-                e?.message || "No se pudo bloquear temporalmente los horarios."
-            )
+            setErrorMsg(e?.message || "No se pudo bloquear temporalmente los horarios.")
             setPayReady(false)
         } finally {
             setLoading(false)
@@ -221,50 +279,44 @@ export default function Checkout() {
                 </button>
             </div>
 
-            {/* Resumen de horarios */}
+            {/* Resumen */}
             <section className="rounded-2xl bg-white p-5 border border-emerald-100 shadow-sm">
                 <h2 className="font-semibold text-emerald-900">Tu carrito</h2>
                 {items.length === 0 ? (
                     <p className="mt-2 text-sm text-gray-500">No hay horarios seleccionados.</p>
                 ) : (
                     <div className="mt-3 space-y-4">
-                        {Object.keys(grouped)
-                            .sort()
-                            .map((ymd) => (
-                                <div key={ymd}>
-                                    <div className="text-sm font-medium text-gray-700">{ymd}</div>
-                                    <div className="mt-2 flex flex-wrap gap-2">
-                                        {grouped[ymd].map((it) => (
-                                            <span
-                                                key={`${it.start_at}-${it.end_at}`}
-                                                className="px-2 py-1 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-mono tabular-nums whitespace-nowrap"
-                                            >
-                                                {toLocalHM(it.start_at)}–{toLocalHM(it.end_at)}
-                                            </span>
-                                        ))}
-                                    </div>
+                        {Object.keys(grouped).sort().map((ymd) => (
+                            <div key={ymd}>
+                                <div className="text-sm font-medium text-gray-700">{ymd}</div>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                    {grouped[ymd].map((it) => (
+                                        <span
+                                            key={`${it.start_at}-${it.end_at}`}
+                                            className="px-2 py-1 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-mono tabular-nums whitespace-nowrap"
+                                        >
+                                            {toLocalHM(it.start_at)}–{toLocalHM(it.end_at)}
+                                        </span>
+                                    ))}
                                 </div>
-                            ))}
+                            </div>
+                        ))}
                         <div className="pt-3 border-t flex items-center justify-between">
                             <div className="text-sm text-gray-700">
-                                {items.length} {items.length === 1 ? "slot" : "slots"} × $
-                                {priceUSD.toFixed(2)}
+                                {items.length} {items.length === 1 ? "slot" : "slots"} × ${priceUSD.toFixed(2)}
                             </div>
-                            <div className="text-lg font-semibold text-emerald-800">
-                                Total: ${total}
-                            </div>
+                            <div className="text-lg font-semibold text-emerald-800">Total: ${totalUSD.toFixed(2)}</div>
                         </div>
                     </div>
                 )}
             </section>
 
-            {/* Info / ayuda */}
+            {/* Info */}
             <section className="rounded-2xl bg-white p-5 border border-blue-100 shadow-sm">
                 <h2 className="font-semibold text-blue-900">Pago con tarjeta</h2>
                 <p className="text-sm text-gray-600 mt-1">
-                    Primero bloqueamos tu horario <strong>por {holdMinutes} minutos</strong> y luego
-                    pagas con PayPhone. Al aprobarse el pago, se confirma la cita y se guarda el pago
-                    en el sistema.
+                    Primero bloqueamos tu horario <strong>por {holdMinutes} minutos</strong> y luego pagas con PayPhone.
+                    La Cajita se mostrará abajo. Si no aparece, revisa la consola y tus credenciales de PayPhone.
                 </p>
                 <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
                     <Clock className="h-4 w-4" />
@@ -284,10 +336,27 @@ export default function Checkout() {
                 </div>
             )}
 
-            {/* Contenedor donde PayPhone va a dibujar su botón/cajita */}
+            {/* Mini-debug visible */}
+            <div className="rounded-lg border px-3 py-2 text-xs text-gray-700 bg-gray-50">
+                <div className="flex items-center gap-2">
+                    <Info className="h-3.5 w-3.5" />
+                    <span className="font-medium">DEBUG PayPhone</span>
+                </div>
+                <div className="mt-1 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-y-1">
+                    <div>SDK listo: <strong>{sdkReady ? "sí" : "no"}</strong></div>
+                    <div>Token: <strong>{PAYPHONE_PUBLIC_TOKEN ? "ok" : "faltante"}</strong></div>
+                    <div>StoreId: <strong>{PAYPHONE_STORE_ID ? "ok" : "faltante"}</strong></div>
+                    <div>Monto (¢): <strong>{amountCents}</strong></div>
+                    <div>Dominio: <strong>{location.host}</strong></div>
+                </div>
+                {sdkLog.length > 0 && (
+                    <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{sdkLog.map((l, i) => `• ${l}`).join("\n")}</pre>
+                )}
+            </div>
+
+            {/* Contenedor Cajita (ID requerido por .render('pp-button')) */}
             <div
-                id="payphone-btn-container"
-                ref={payphoneDivRef}
+                id="pp-button"
                 className={`${payReady ? "block" : "hidden"} rounded-xl bg-white border border-emerald-100 p-4`}
             />
 
