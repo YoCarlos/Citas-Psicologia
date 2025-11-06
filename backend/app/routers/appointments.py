@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Background
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, select, and_
 from typing import List, Optional
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..db import get_db
 from .. import models, schemas
@@ -367,7 +367,7 @@ def hold_appointments(
     )
 
     # 🔐 Generar un client_tx_id único para este HOLD (se usará en PayPhone y para confirmar)
-    client_tx_id = f"hold-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+    client_tx_id = f"hold-{int(datetime.now(timezone.utc).timestamp() * 1000)}-{secrets.token_hex(4)}"
 
     to_create: list[models.Appointment] = []
     for s in payload.slots:
