@@ -22,7 +22,6 @@ router = APIRouter(prefix="/appointments", tags=["appointments"])
 BLOCKING_STATES = ["pending", "confirmed"]  # 'processing' se maneja explícitamente más abajo
 
 
-
 def delete_stale_holds(db: Session) -> int:
     """
     Elimina de la tabla appointments todos los registros en 'pending' o 'processing'
@@ -446,19 +445,43 @@ def hold_appointments(
     "/{id}/confirm",
     response_model=schemas.AppointmentOut,
     status_code=200,
-    dependencies=[Depends(require_role(models.UserRole.doctor))],
 )
 async def confirm_appt(
     id: int,
     bg: BackgroundTasks,
     db: Session = Depends(get_db),
+    current = Depends(get_current_user),
 ):
+    """
+    Opción A:
+    - Permite confirmar como DOCTOR (dueña de la cita) o como PACIENTE (dueño de la cita) cuando:
+        * status == pending
+        * method == payphone
+    Se conservan todas las validaciones de solapes/bloqueos/hold/Zoom.
+    """
+
     # 🧹 Limpia holds vencidos antes de confirmar
     delete_stale_holds(db)
 
     appt = db.get(models.Appointment, id)
     if not appt:
         raise HTTPException(404, detail="No encontrado")
+
+    # --- Autorización ---
+    if current.role == models.UserRole.doctor:
+        if appt.doctor_id != current.id:
+            raise HTTPException(403, detail="No puedes confirmar citas de otra doctora")
+    elif current.role == models.UserRole.patient:
+        if appt.patient_id != current.id:
+            raise HTTPException(403, detail="No puedes confirmar citas de otro paciente")
+        # El paciente solo confirma pagos PayPhone pendientes
+        if not (
+            appt.status == models.AppointmentStatus.pending
+            and appt.method == models.PaymentMethod.payphone
+        ):
+            raise HTTPException(403, detail="Solo puedes confirmar pagos PayPhone pendientes de tu cita")
+    else:
+        raise HTTPException(403, detail="No autorizado")
 
     if appt.status not in (models.AppointmentStatus.pending, models.AppointmentStatus.free):
         raise HTTPException(400, detail="Estado inválido para confirmar")
@@ -480,6 +503,7 @@ async def confirm_appt(
     if has_conflict_or_block(db, doctor_id=appt.doctor_id, start_utc=s, end_utc=e, exclude_appt_id=appt.id):
         raise HTTPException(409, detail="Ese horario ya está ocupado o bloqueado")
 
+    # Crear Zoom si hace falta
     if not appt.zoom_meeting_id or not appt.zoom_join_url:
         if not settings.ZOOM_DEFAULT_USER:
             raise HTTPException(500, detail="ZOOM_DEFAULT_USER no configurado")
@@ -503,6 +527,7 @@ async def confirm_appt(
     db.commit()
     db.refresh(appt)
 
+    # Notificar + recordatorio
     bg.add_task(send_confirmed_emails, appt, db)
     schedule_reminder_job(appt)
 
