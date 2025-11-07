@@ -13,8 +13,8 @@ const PAYPHONE_BOX_JS =
 const PAYPHONE_BOX_CSS =
     import.meta.env.VITE_PAYPHONE_BOX_CSS ||
     "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.css"
-const PAYPHONE_PUBLIC_TOKEN = import.meta.env.VITE_PAYPHONE_TOKEN || ""           // requerido
-const PAYPHONE_STORE_ID = import.meta.env.VITE_PAYPHONE_STORE_ID || ""         // requerido
+const PAYPHONE_PUBLIC_TOKEN = import.meta.env.VITE_PAYPHONE_TOKEN || ""   // requerido
+const PAYPHONE_STORE_ID = import.meta.env.VITE_PAYPHONE_STORE_ID || "" // requerido
 
 const TZ = "America/Guayaquil"
 
@@ -96,9 +96,10 @@ export default function Checkout() {
             s.type = "module"
             s.src = PAYPHONE_BOX_JS
             s.onload = () => {
-                // algunos navegadores necesitan un pequeño delay para exponer la clase global
                 const tick = () => {
-                    const ok = typeof window.PPaymentButtonBox === "function" || typeof globalThis.PPaymentButtonBox === "function"
+                    const ok =
+                        typeof window.PPaymentButtonBox === "function" ||
+                        typeof globalThis.PPaymentButtonBox === "function"
                     setSdkReady(ok)
                     log("PPaymentButtonBox disponible?", ok)
                 }
@@ -110,8 +111,9 @@ export default function Checkout() {
             }
             document.body.appendChild(s)
         } else {
-            // Si ya está el script, verificar disponibilidad
-            const ok = typeof window.PPaymentButtonBox === "function" || typeof globalThis.PPaymentButtonBox === "function"
+            const ok =
+                typeof window.PPaymentButtonBox === "function" ||
+                typeof globalThis.PPaymentButtonBox === "function"
             setSdkReady(ok)
             log("SDK ya presente. PPaymentButtonBox disponible?", ok)
         }
@@ -119,7 +121,7 @@ export default function Checkout() {
 
     const goBack = () => nav(-1)
 
-    // Renderiza la Cajita en #pp-button — SOLO CAMPOS MÍNIMOS
+    // Renderiza la Cajita en #pp-button — con optionalParameter3 (IDs de citas)
     const renderPayphoneBox = React.useCallback((opts) => {
         const PPB = window.PPaymentButtonBox || globalThis.PPaymentButtonBox
         if (!PPB) {
@@ -152,19 +154,20 @@ export default function Checkout() {
         try {
             new PPB({
                 token: PAYPHONE_PUBLIC_TOKEN,
-                clientTransactionId: opts.clientTransactionId, // ID único
-                amount: opts.amount,               // total en centavos
-                amountWithoutTax: opts.amount,     // si todo es sin IVA
+                clientTransactionId: opts.clientTransactionId,   // ID único
+                amount: opts.amount,                              // total en centavos
+                amountWithoutTax: opts.amount,                    // si todo es sin IVA
                 amountWithTax: 0,
                 tax: 0,
                 currency: "USD",
                 storeId: PAYPHONE_STORE_ID,
                 reference: opts.reference || "Cita Psicología",
-                optionalParameter: "Este es un parametro extra",
-                // IMPORTANTE: no enviamos phoneNumber, email, timeZone, service, tip, defaultMethod, etc.
+                // 👉 pasamos los IDs de las citas creadas por el HOLD:
+                optionalParameter3: opts.optionalParameter3,      // "appts=12,34,56"
+                // Nada más: sin phoneNumber, email, timeZone, etc.
             }).render("pp-button")
 
-            log("Cajita renderizada ✅ con clientTx:", opts.clientTransactionId)
+            log("Cajita renderizada ✅ con clientTx:", opts.clientTransactionId, "opt3:", opts.optionalParameter3)
             return true
         } catch (e) {
             console.error(e)
@@ -197,7 +200,11 @@ export default function Checkout() {
             setOkMsg(`¡Listo! Se bloquearon ${holdCount} horario(s) por ${holdMinutes} minutos. Carga la cajita para pagar.`)
             setPayReady(true)
 
-            // 2) Render Cajita PayPhone (client tx generado aquí, SIN extra params)
+            // 2) Construir optionalParameter3 con los IDs de las citas del HOLD
+            const ids = (res?.appointments ?? []).map(a => a.id).filter(Boolean)
+            const optionalParam3 = ids.length ? `appts=${ids.join(",")}` : "appts="
+
+            // 3) Render Cajita PayPhone (client tx generado aquí)
             const clientTxId = `tx-${Date.now()}-${Math.floor(Math.random() * 10000)}`
             const refText = `cita-${clientTxId}`
 
@@ -212,6 +219,7 @@ export default function Checkout() {
                 amount: amountCents,
                 reference: refText,
                 clientTransactionId: clientTxId,
+                optionalParameter3: optionalParam3, // ⬅️ AQUÍ VAN LOS IDs
             })
             if (!ok) {
                 setErrorMsg("No se pudo mostrar la cajita de pagos. Revisa consola y credenciales.")
@@ -312,6 +320,9 @@ export default function Checkout() {
                     <div>StoreId: <strong>{PAYPHONE_STORE_ID ? "ok" : "faltante"}</strong></div>
                     <div>Monto (¢): <strong>{amountCents}</strong></div>
                     <div>Dominio: <strong>{location.host}</strong></div>
+                    {lastHold?.appointments?.length ? (
+                        <div>IDs: <strong>{lastHold.appointments.map(a => a.id).join(",")}</strong></div>
+                    ) : null}
                 </div>
                 {sdkLog.length > 0 && (
                     <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">

@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, or_
 from datetime import datetime, timezone
-import json
 
 from ..db import get_db
 from .. import models, schemas
@@ -64,6 +63,7 @@ def _has_conflict_or_block(
     block_conflict_id = db.scalar(block_stmt)
     return bool(block_conflict_id)
 
+
 async def _confirm_single_appointment(db: Session, bg: BackgroundTasks, appt: models.Appointment) -> models.Appointment:
     """
     Confirma una cita: crea Zoom si falta, limpia hold_until, cambia estado y agenda recordatorio.
@@ -105,11 +105,32 @@ async def _confirm_single_appointment(db: Session, bg: BackgroundTasks, appt: mo
     schedule_reminder_job(appt)
     return appt
 
+
+def _parse_optional_appt_ids(opt3: Optional[str]) -> List[int]:
+    """
+    Espera formato 'appts=12,34,56'. Devuelve [12,34,56].
+    """
+    if not opt3:
+        return []
+    opt3 = str(opt3).strip()
+    if not opt3.startswith("appts="):
+        return []
+    payload = opt3[6:].strip()
+    if not payload:
+        return []
+    ids: List[int] = []
+    for tok in payload.split(","):
+        tok = tok.strip()
+        if tok.isdigit():
+            ids.append(int(tok))
+    return ids
+
+
 @router.post(
     "/payphone/confirm",
     response_model=schemas.PayphoneConfirmOut,
     status_code=200,
-    dependencies=[Depends(require_role(models.UserRole.patient))],  # este endpoint lo usa el paciente al volver del ReturnURL
+    dependencies=[Depends(require_role(models.UserRole.patient))],  # lo usa el paciente al volver del ReturnURL
 )
 async def payphone_confirm(
     payload: schemas.PayphoneConfirmIn,
@@ -118,9 +139,10 @@ async def payphone_confirm(
     current = Depends(get_current_user),
 ):
     """
-    Verifica con PayPhone (Confirm) el estado de la transacción y, si está Approved, confirma
-    las citas ligadas a clientTxId (appointments.client_tx_id == payload.clientTxId), registrando
-    un Payment idempotente por payphone_tx_id (transactionId).
+    Verifica con PayPhone (Confirm) el estado de la transacción y, si está Approved:
+    - Lee optionalParameter3 = 'appts=ID1,ID2,...' y confirma SOLO esas citas (nuevo flujo)
+    - Si no llega optionalParameter3, cae al flujo anterior por clientTxId (legado)
+    - Registra Payment idempotente por payphone_tx_id (transactionId)
     """
     # 1) Consultar PayPhone
     try:
@@ -128,12 +150,16 @@ async def payphone_confirm(
     except PayphoneError as ex:
         raise HTTPException(status_code=502, detail=str(ex))
 
-    # Campos típicos de respuesta (pueden variar; controlamos con .get)
+    # Campos típicos
     transaction_status = (resp.get("transactionStatus") or "").strip()
     status_code = int(resp.get("statusCode") or 0)
     transaction_id = int(resp.get("transactionId") or payload.id)
-    client_tx_id = resp.get("clientTransactionId") or payload.clientTxId
-    amount = int(resp.get("amount") or 0)  # PayPhone devuelve int (centavos)
+    client_tx_id = resp.get("clientTransactionId") or payload.clientTxId or ""
+    amount = int(resp.get("amount") or 0)  # centavos
+
+    # NUEVO: ids desde optionalParameter3
+    opt3 = resp.get("optionalParameter3")  # p.ej. "appts=12,34,56"
+    appt_ids_from_opt3 = _parse_optional_appt_ids(opt3)
 
     approved = (transaction_status.lower() == "approved") and (status_code == 3)
 
@@ -141,19 +167,22 @@ async def payphone_confirm(
     existing_payment = db.scalar(
         select(models.Payment).where(models.Payment.payphone_tx_id == str(transaction_id))
     )
-    confirmed_ids: List[int] = []
-    payment_id: Optional[int] = None
-
     if existing_payment:
         # Ya registrado antes: devolvemos éxito con info
-        payment_id = existing_payment.id
-        # Intentamos listar citas vinculadas al mismo client_tx_id y ya confirmadas
-        appts = list(db.scalars(
-            select(models.Appointment)
-            .where(models.Appointment.client_tx_id == client_tx_id)
-            .where(models.Appointment.patient_id == current.id)
-        ))
-        confirmed_ids = [a.id for a in appts if a.status == models.AppointmentStatus.confirmed]
+        # Si tenemos ids en opt3, los usamos para recuperar confirmadas; si no, caemos al legado (client_tx_id)
+        confirmed_ids: List[int] = []
+        if appt_ids_from_opt3:
+            appts = list(db.scalars(
+                select(models.Appointment).where(models.Appointment.id.in_(appt_ids_from_opt3))
+            ))
+            confirmed_ids = [a.id for a in appts if a.status == models.AppointmentStatus.confirmed]
+        else:
+            appts = list(db.scalars(
+                select(models.Appointment)
+                .where(models.Appointment.client_tx_id == client_tx_id)
+                .where(models.Appointment.patient_id == current.id)
+            ))
+            confirmed_ids = [a.id for a in appts if a.status == models.AppointmentStatus.confirmed]
 
         return schemas.PayphoneConfirmOut(
             transaction_status=transaction_status,
@@ -163,11 +192,11 @@ async def payphone_confirm(
             amount_cents=amount,
             approved=approved,
             confirmed_appointment_ids=confirmed_ids,
-            payment_id=payment_id,
+            payment_id=existing_payment.id,
             message="Pago ya había sido registrado (idempotente).",
         )
 
-    # 3) Si NO está aprobado, respondemos sin confirmar nada (pero devolviendo el detalle)
+    # 3) Si NO está aprobado, respondemos sin confirmar nada
     if not approved:
         return schemas.PayphoneConfirmOut(
             transaction_status=transaction_status,
@@ -181,46 +210,61 @@ async def payphone_confirm(
             message=resp.get("message") or "Transacción no aprobada.",
         )
 
-    # 4) Buscar citas ligadas al client_tx_id del usuario actual
-    appts = list(db.scalars(
-        select(models.Appointment)
-        .where(models.Appointment.client_tx_id == client_tx_id)
-        .where(models.Appointment.patient_id == current.id)
-        .where(models.Appointment.status.in_([
-            models.AppointmentStatus.pending,
-            getattr(models.AppointmentStatus, "processing", models.AppointmentStatus.pending),
-            models.AppointmentStatus.free,
-        ]))
-    ))
+    # 4) Obtener citas a confirmar
+    confirmed_ids: List[int] = []
+    target_appts: List[models.Appointment] = []
 
-    # Confirmar cada cita si no hay conflicto (si el hold expiró, se revalida)
-    for appt in appts:
+    if appt_ids_from_opt3:
+        # NUEVO: confirmar SOLO las recibidas en optionalParameter3
+        target_appts = list(db.scalars(
+            select(models.Appointment)
+            .where(models.Appointment.id.in_(appt_ids_from_opt3))
+            .where(models.Appointment.patient_id == current.id)
+            .where(models.Appointment.status.in_([
+                models.AppointmentStatus.pending,
+                getattr(models.AppointmentStatus, "processing", models.AppointmentStatus.pending),
+                models.AppointmentStatus.free,
+            ]))
+        ))
+    else:
+        # LEGADO: por client_tx_id (si aún hay citas con ese vínculo)
+        target_appts = list(db.scalars(
+            select(models.Appointment)
+            .where(models.Appointment.client_tx_id == client_tx_id)
+            .where(models.Appointment.patient_id == current.id)
+            .where(models.Appointment.status.in_([
+                models.AppointmentStatus.pending,
+                getattr(models.AppointmentStatus, "processing", models.AppointmentStatus.pending),
+                models.AppointmentStatus.free,
+            ]))
+        ))
+
+    # 5) Confirmar cada cita (saltando conflictos/errores individualmente)
+    for appt in target_appts:
         try:
             await _confirm_single_appointment(db, bg, appt)
             confirmed_ids.append(appt.id)
         except HTTPException:
-            # si hay conflicto con alguna, la saltamos y seguimos con las demás
+            # si hay conflicto/expiración con alguna, la saltamos
             continue
 
-    # Persistir confirmaciones y crear Payment si al menos una cita se confirmó
+    # 6) Registrar Payment si al menos una cita fue confirmada
     payment_row: Optional[models.Payment] = None
     if confirmed_ids:
-        # tomamos la primera confirmada como referencia para appointment_id
         ref_id = confirmed_ids[0]
-
         payment_row = models.Payment(
             appointment_id=ref_id,
             method="payphone",
             amount_cents=amount,
             payphone_tx_id=str(transaction_id),
             client_tx_id=client_tx_id,
-            raw_payload=resp,  # auditoría
+            raw_payload=resp,  # auditoría completa
         )
         db.add(payment_row)
 
-    # Commit general
     db.commit()
 
+    payment_id: Optional[int] = None
     if payment_row:
         db.refresh(payment_row)
         payment_id = payment_row.id
