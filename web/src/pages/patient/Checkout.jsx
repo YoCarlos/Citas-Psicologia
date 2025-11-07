@@ -163,7 +163,7 @@ export default function Checkout() {
                 storeId: PAYPHONE_STORE_ID,
                 reference: opts.reference || "Cita Psicología",
                 // 👉 pasamos los IDs de las citas creadas por el HOLD:
-                optionalParameter3: opts.optionalParameter3,      // "appts=12,34,56"
+                optionalParameter: opts.optionalParameter3,      // "appts=12,34,56"
                 // Nada más: sin phoneNumber, email, timeZone, etc.
             }).render("pp-button")
 
