@@ -64,10 +64,15 @@ def _has_conflict_or_block(
     return bool(block_conflict_id)
 
 
-async def _confirm_single_appointment(db: Session, bg: BackgroundTasks, appt: models.Appointment) -> models.Appointment:
+async def _confirm_single_appointment(
+    db: Session,
+    bg: BackgroundTasks,
+    appt: models.Appointment
+) -> models.Appointment:
     """
-    Confirma una cita: crea Zoom si falta, limpia hold_until, cambia estado y agenda recordatorio.
-    No hace commit; el commit lo hace el llamador (para batch).
+    Confirma una cita: crea Zoom si falta (no aborta si falla), limpia hold_until,
+    cambia estado y agenda recordatorio si hay link de Zoom.
+    No hace commit; el commit lo hace el llamador (batch).
     """
     s = to_utc(appt.start_at)
     e = to_utc(appt.end_at)
@@ -75,34 +80,51 @@ async def _confirm_single_appointment(db: Session, bg: BackgroundTasks, appt: mo
         raise HTTPException(status_code=400, detail="Rango horario inválido")
 
     # Validar conflictos a última hora
-    if _has_conflict_or_block(db, doctor_id=appt.doctor_id, start_utc=s, end_utc=e, exclude_appt_id=appt.id):
+    if _has_conflict_or_block(
+        db,
+        doctor_id=appt.doctor_id,
+        start_utc=s,
+        end_utc=e,
+        exclude_appt_id=appt.id,
+    ):
         raise HTTPException(409, detail="Ese horario ya está ocupado o bloqueado")
 
-    # Crear Zoom si falta
+    zoom_created = False
+
+    # Crear Zoom solo si falta
     if not appt.zoom_meeting_id or not appt.zoom_join_url:
-        if not settings.ZOOM_DEFAULT_USER:
-            raise HTTPException(500, detail="ZOOM_DEFAULT_USER no configurado")
-        start_iso = iso_utc_z(s)
-        duration = int((e - s).total_seconds() // 60) or 45
-        z = await zoom.create_meeting(
-            user_id=settings.ZOOM_DEFAULT_USER,
-            topic=f"Cita {appt.id} - Doctor {appt.doctor_id}",
-            start_time_iso=start_iso,
-            duration_minutes=duration,
-            timezone="America/Guayaquil",
-            waiting_room=True,
-            join_before_host=False,
-        )
-        appt.zoom_meeting_id = str(z.get("id"))
-        appt.zoom_join_url = z.get("join_url")
+        try:
+            if not settings.ZOOM_DEFAULT_USER:
+                raise RuntimeError("ZOOM_DEFAULT_USER no configurado")
+
+            start_iso = iso_utc_z(s)
+            duration = int((e - s).total_seconds() // 60) or 45
+            z = await zoom.create_meeting(
+                user_id=settings.ZOOM_DEFAULT_USER,
+                topic=f"Cita {appt.id} - Doctor {appt.doctor_id}",
+                start_time_iso=start_iso,
+                duration_minutes=duration,
+                timezone="America/Guayaquil",
+                waiting_room=True,
+                join_before_host=False,
+            )
+            appt.zoom_meeting_id = str(z.get("id"))
+            appt.zoom_join_url = z.get("join_url")
+            zoom_created = True
+        except Exception:
+            # No abortamos: confirmamos igual y se puede reintentar Zoom luego
+            appt.zoom_meeting_id = None
+            appt.zoom_join_url = None
 
     # Confirmar
     appt.status = models.AppointmentStatus.confirmed
     appt.hold_until = None
 
-    # Programar recordatorio y correos (tras commit real)
-    bg.add_task(send_confirmed_emails, appt, db)
-    schedule_reminder_job(appt)
+    # Programar recordatorio y correos solo si hay link
+    if (zoom_created or appt.zoom_join_url) and appt.zoom_join_url:
+        bg.add_task(send_confirmed_emails, appt, db)
+        schedule_reminder_job(appt)
+
     return appt
 
 
@@ -169,7 +191,6 @@ async def payphone_confirm(
     )
     if existing_payment:
         # Ya registrado antes: devolvemos éxito con info
-        # Si tenemos ids en opt3, los usamos para recuperar confirmadas; si no, caemos al legado (client_tx_id)
         confirmed_ids: List[int] = []
         if appt_ids_from_opt3:
             appts = list(db.scalars(
