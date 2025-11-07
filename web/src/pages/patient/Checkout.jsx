@@ -107,7 +107,7 @@ export default function Checkout() {
 
     const goBack = () => nav(-1)
 
-    // === Renderizar cajita ===
+    // === Renderizar cajita PayPhone con validación ===
     const renderPayphoneBox = React.useCallback(
         (opts) => {
             const PPB = window.PPaymentButtonBox || globalThis.PPaymentButtonBox
@@ -118,6 +118,17 @@ export default function Checkout() {
             const container = document.getElementById("pp-button")
             if (!container) return false
             container.innerHTML = ""
+
+            // ✅ limpiar y validar número
+            let phone = (user?.phone || "").replace(/^\+593/, "0").replace(/\D/g, "")
+            if (!/^09\d{8}$/.test(phone)) {
+                setErrorMsg(
+                    "Tu número de teléfono no es válido para PayPhone. Debe empezar con 09 y tener 10 dígitos (Ej: 0984234698)."
+                )
+                log("Número inválido:", phone)
+                return false
+            }
+
             try {
                 new PPB({
                     token: PAYPHONE_PUBLIC_TOKEN,
@@ -133,10 +144,9 @@ export default function Checkout() {
                     clientTransactionId: opts.clientTransactionId,
                     defaultMethod: "card",
                     timeZone: TIMEZONE_OFFSET,
-                    phoneNumber: user?.phone || "",
+                    phoneNumber: phone,
                     email: user?.email || "",
-                    // ⬇️ aquí pasaremos los IDs de cita para recuperarlos en el return URL
-                    optionalParameter3: opts.appointmentIds.join(","),
+                    optionalParameter3: opts.appointmentIds.join(","), // para confirmar luego
                 }).render("pp-button")
 
                 log("Cajita renderizada con clientTx:", opts.clientTransactionId)
@@ -179,7 +189,6 @@ export default function Checkout() {
             )
             setPayReady(true)
 
-            // Generamos un ID único local para la transacción
             const clientTx = `tx-${Date.now()}-${Math.floor(Math.random() * 9999)}`
             const refText = `cita-${clientTx}`
 
@@ -256,6 +265,7 @@ export default function Checkout() {
                 )}
             </section>
 
+            {/* Info */}
             <section className="rounded-2xl bg-white p-5 border border-blue-100 shadow-sm">
                 <h2 className="font-semibold text-blue-900">Pago con tarjeta</h2>
                 <p className="text-sm text-gray-600 mt-1">
@@ -279,6 +289,7 @@ export default function Checkout() {
                 </div>
             )}
 
+            {/* Debug */}
             <div className="rounded-lg border px-3 py-2 text-xs text-gray-700 bg-gray-50">
                 <div className="flex items-center gap-2">
                     <Info className="h-3.5 w-3.5" />
@@ -291,12 +302,7 @@ export default function Checkout() {
                     <div>Monto (¢): <strong>{amountCents}</strong></div>
                     <div>Dominio: <strong>{location.host}</strong></div>
                     {lastHold?.appointments && (
-                        <div>
-                            IDs:{" "}
-                            <strong>
-                                {lastHold.appointments.map((a) => a.id).join(", ")}
-                            </strong>
-                        </div>
+                        <div>IDs: <strong>{lastHold.appointments.map((a) => a.id).join(", ")}</strong></div>
                     )}
                 </div>
                 {sdkLog.length > 0 && (
