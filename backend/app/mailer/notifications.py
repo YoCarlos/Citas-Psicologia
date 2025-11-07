@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.mailer.service import send_email
 from app import models
 from app.email_settings import EmailSettings
-from backend.app.db import SessionLocal
+from app.db import SessionLocal
 
 TZ_LOCAL = ZoneInfo("America/Guayaquil")
 
