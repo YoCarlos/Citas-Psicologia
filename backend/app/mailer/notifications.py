@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.mailer.service import send_email
 from app import models
 from app.email_settings import EmailSettings
+from backend.app.db import SessionLocal
 
 TZ_LOCAL = ZoneInfo("America/Guayaquil")
 
@@ -126,3 +127,17 @@ async def send_reminder_emails(appt: models.Appointment, db: Session):
             context=ctx,
             settings=settings,
         )
+
+async def send_confirmed_emails_by_id(appointment_id: int):
+    """
+    Versión segura para background: abre su propia sesión y delega
+    a send_confirmed_emails(appt, db).
+    """
+    db = SessionLocal()
+    try:
+        appt = db.get(models.Appointment, appointment_id)
+        if not appt:
+            return
+        await send_confirmed_emails(appt, db)
+    finally:
+        db.close()

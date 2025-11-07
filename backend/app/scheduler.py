@@ -233,6 +233,20 @@ def schedule_reminder_job(appt: models.Appointment):
             coalesce=True,
         )
 
+def schedule_reminder_job_by_id(appt_id: int):
+    """
+    Versión segura para background: abre su propia sesión, carga la cita y
+    reutiliza schedule_reminder_job(appt).
+    """
+    db: Session = SessionLocal()
+    try:
+        appt = _load_appt(db, appt_id)
+        if not appt:
+            return
+        schedule_reminder_job(appt)
+    finally:
+        db.close()
+
 
 def cancel_reminder_job(appt_id: int):
     """
@@ -255,3 +269,4 @@ def cancel_reminder_job(appt_id: int):
             db.commit()
     finally:
         db.close()
+
