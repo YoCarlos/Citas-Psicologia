@@ -1,3 +1,4 @@
+// src/pages/paciente/Checkout.jsx
 import React from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { apiPost } from "../../lib/api"
@@ -6,10 +7,14 @@ import { ArrowLeft, ArrowRight, CreditCard, Clock, Info } from "lucide-react"
 
 // === PayPhone Cajita v1.1 (OFICIAL) ===
 // Docs: https://www.docs.payphone.app/cajita-de-pagos-payphone
-const PAYPHONE_BOX_JS = import.meta.env.VITE_PAYPHONE_BOX_JS || "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.js"
-const PAYPHONE_BOX_CSS = import.meta.env.VITE_PAYPHONE_BOX_CSS || "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.css"
+const PAYPHONE_BOX_JS =
+    import.meta.env.VITE_PAYPHONE_BOX_JS ||
+    "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.js"
+const PAYPHONE_BOX_CSS =
+    import.meta.env.VITE_PAYPHONE_BOX_CSS ||
+    "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.css"
 const PAYPHONE_PUBLIC_TOKEN = import.meta.env.VITE_PAYPHONE_TOKEN || "" // requerido
-const PAYPHONE_STORE_ID = import.meta.env.VITE_PAYPHONE_STORE_ID || ""   // requerido
+const PAYPHONE_STORE_ID = import.meta.env.VITE_PAYPHONE_STORE_ID || ""  // requerido
 const TZ = "America/Guayaquil"
 const TIMEZONE_OFFSET = -5 // Ecuador (sin DST)
 
@@ -48,7 +53,8 @@ export default function Checkout() {
     const { state } = useLocation()
     const user = getUserFromToken()
 
-    const doctorId = state?.doctorId || (user?.role === "doctor" ? user?.id : user?.doctor_id)
+    const doctorId =
+        state?.doctorId || (user?.role === "doctor" ? user?.id : user?.doctor_id)
     const priceUSD = Number(state?.priceUSD ?? 0)
     const items = Array.isArray(state?.items) ? state.items : []
     const totalUSD = items.length * priceUSD
@@ -73,22 +79,25 @@ export default function Checkout() {
 
     // === Cargar SDK ===
     React.useEffect(() => {
+        // CSS
         if (!document.querySelector(`link[href="${PAYPHONE_BOX_CSS}"]`)) {
             const link = document.createElement("link")
             link.rel = "stylesheet"
             link.href = PAYPHONE_BOX_CSS
             document.head.appendChild(link)
         }
-
+        // JS
         if (!document.querySelector(`script[src="${PAYPHONE_BOX_JS}"]`)) {
             const s = document.createElement("script")
             s.type = "module"
             s.src = PAYPHONE_BOX_JS
             s.onload = () => {
                 setTimeout(() => {
-                    const ok = typeof window.PPaymentButtonBox === "function"
+                    const ok =
+                        typeof window.PPaymentButtonBox === "function" ||
+                        typeof globalThis.PPaymentButtonBox === "function"
                     setSdkReady(ok)
-                    log("SDK cargado correctamente")
+                    log("SDK cargado correctamente:", ok)
                 }, 100)
             }
             s.onerror = () => {
@@ -96,7 +105,9 @@ export default function Checkout() {
             }
             document.body.appendChild(s)
         } else {
-            const ok = typeof window.PPaymentButtonBox === "function"
+            const ok =
+                typeof window.PPaymentButtonBox === "function" ||
+                typeof globalThis.PPaymentButtonBox === "function"
             setSdkReady(ok)
         }
     }, [log])
@@ -104,44 +115,47 @@ export default function Checkout() {
     const goBack = () => nav(-1)
 
     // === Renderizar cajita ===
-    const renderPayphoneBox = React.useCallback((opts) => {
-        const PPB = window.PPaymentButtonBox
-        if (!PPB) {
-            log("SDK no disponible todavía")
-            return false
-        }
-        const container = document.getElementById("pp-button")
-        if (!container) return false
-        container.innerHTML = ""
+    const renderPayphoneBox = React.useCallback(
+        (opts) => {
+            const PPB = window.PPaymentButtonBox || globalThis.PPaymentButtonBox
+            if (!PPB) {
+                log("SDK no disponible todavía")
+                return false
+            }
+            const container = document.getElementById("pp-button")
+            if (!container) return false
+            container.innerHTML = ""
 
-        try {
-            const box = new PPB({
-                token: PAYPHONE_PUBLIC_TOKEN,
-                amount: opts.amount,
-                amountWithoutTax: opts.amount,
-                amountWithTax: 0,
-                tax: 0,
-                service: 0,
-                tip: 0,
-                currency: "USD",
-                storeId: PAYPHONE_STORE_ID,
-                reference: opts.reference || "Cita Psicología",
-                clientTransactionId: opts.clientTransactionId,
-                defaultMethod: "card",
-                timeZone: TIMEZONE_OFFSET,
-                // Datos opcionales:
-                phoneNumber: user?.phone || "",
-                email: user?.email || "",
-            }).render("pp-button")
+            try {
+                new PPB({
+                    token: PAYPHONE_PUBLIC_TOKEN,
+                    amount: opts.amount,
+                    amountWithoutTax: opts.amount, // todo sin IVA (ajústalo si manejas IVA)
+                    amountWithTax: 0,
+                    tax: 0,
+                    service: 0,
+                    tip: 0,
+                    currency: "USD",
+                    storeId: PAYPHONE_STORE_ID,
+                    reference: opts.reference || "Cita Psicología",
+                    clientTransactionId: opts.clientTransactionId, // ⬅️ EL MISMO QUE EL BACKEND
+                    defaultMethod: "card",
+                    timeZone: TIMEZONE_OFFSET,
+                    // Datos opcionales si los tienes:
+                    phoneNumber: user?.phone || "",
+                    email: user?.email || "",
+                }).render("pp-button")
 
-            log("Cajita renderizada con clientTx:", opts.clientTransactionId)
-            return true
-        } catch (e) {
-            console.error(e)
-            setErrorMsg("No se pudo inicializar la cajita de pagos.")
-            return false
-        }
-    }, [log, user])
+                log("Cajita renderizada con clientTx:", opts.clientTransactionId)
+                return true
+            } catch (e) {
+                console.error(e)
+                setErrorMsg("No se pudo inicializar la cajita de pagos.")
+                return false
+            }
+        },
+        [log, user]
+    )
 
     // === Flujo principal: HOLD + Render Cajita ===
     const confirm = async () => {
@@ -160,7 +174,7 @@ export default function Checkout() {
             log("POST /appointments/hold", payload)
             const res = await apiPost(`/appointments/hold`, payload)
 
-            // backend devuelve { client_tx_id, appointments }
+            // backend devuelve { client_tx_id, appointments: [...] }
             if (!res?.client_tx_id) {
                 throw new Error("El servidor no devolvió client_tx_id")
             }
@@ -168,12 +182,14 @@ export default function Checkout() {
             setLastHold(res)
             const clientTx = res.client_tx_id
             const holdCount = res?.appointments?.length ?? items.length
-            setOkMsg(`Se bloquearon ${holdCount} horario(s) por ${holdMinutes} minutos. Procede al pago.`)
+            setOkMsg(
+                `Se bloquearon ${holdCount} horario(s) por ${holdMinutes} minutos. Procede al pago.`
+            )
             setPayReady(true)
 
             const refText = `cita-${clientTx}`
 
-            // Esperar SDK
+            // Esperar SDK si hizo falta
             if (!sdkReady) {
                 await new Promise((r) => setTimeout(r, 300))
             }
@@ -181,7 +197,7 @@ export default function Checkout() {
             const ok = renderPayphoneBox({
                 amount: amountCents,
                 reference: refText,
-                clientTransactionId: clientTx,
+                clientTransactionId: clientTx, // ⬅️ MUY IMPORTANTE
             })
 
             if (!ok) {
@@ -221,26 +237,31 @@ export default function Checkout() {
                     <p className="mt-2 text-sm text-gray-500">No hay horarios seleccionados.</p>
                 ) : (
                     <div className="mt-3 space-y-4">
-                        {Object.keys(grouped).sort().map((ymd) => (
-                            <div key={ymd}>
-                                <div className="text-sm font-medium text-gray-700">{ymd}</div>
-                                <div className="mt-2 flex flex-wrap gap-2">
-                                    {grouped[ymd].map((it) => (
-                                        <span
-                                            key={`${it.start_at}-${it.end_at}`}
-                                            className="px-2 py-1 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-mono tabular-nums whitespace-nowrap"
-                                        >
-                                            {toLocalHM(it.start_at)}–{toLocalHM(it.end_at)}
-                                        </span>
-                                    ))}
+                        {Object.keys(grouped)
+                            .sort()
+                            .map((ymd) => (
+                                <div key={ymd}>
+                                    <div className="text-sm font-medium text-gray-700">{ymd}</div>
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                        {grouped[ymd].map((it) => (
+                                            <span
+                                                key={`${it.start_at}-${it.end_at}`}
+                                                className="px-2 py-1 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-mono tabular-nums whitespace-nowrap"
+                                            >
+                                                {toLocalHM(it.start_at)}–{toLocalHM(it.end_at)}
+                                            </span>
+                                        ))}
+                                    </div>
                                 </div>
-                            </div>
-                        ))}
+                            ))}
                         <div className="pt-3 border-t flex items-center justify-between">
                             <div className="text-sm text-gray-700">
-                                {items.length} {items.length === 1 ? "slot" : "slots"} × ${priceUSD.toFixed(2)}
+                                {items.length} {items.length === 1 ? "slot" : "slots"} × $
+                                {priceUSD.toFixed(2)}
                             </div>
-                            <div className="text-lg font-semibold text-emerald-800">Total: ${totalUSD.toFixed(2)}</div>
+                            <div className="text-lg font-semibold text-emerald-800">
+                                Total: ${totalUSD.toFixed(2)}
+                            </div>
                         </div>
                     </div>
                 )}
@@ -250,8 +271,9 @@ export default function Checkout() {
             <section className="rounded-2xl bg-white p-5 border border-blue-100 shadow-sm">
                 <h2 className="font-semibold text-blue-900">Pago con tarjeta</h2>
                 <p className="text-sm text-gray-600 mt-1">
-                    Primero bloqueamos tu horario <strong>por {holdMinutes} minutos</strong> y luego pagas con PayPhone.
-                    La Cajita se mostrará abajo. Si no aparece, revisa la consola y tus credenciales.
+                    Primero bloqueamos tu horario <strong>por {holdMinutes} minutos</strong> y
+                    luego pagas con PayPhone. La Cajita se mostrará abajo. Si no aparece, revisa
+                    la consola y tus credenciales.
                 </p>
                 <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
                     <Clock className="h-4 w-4" />
@@ -278,11 +300,26 @@ export default function Checkout() {
                     <span className="font-medium">DEBUG PayPhone</span>
                 </div>
                 <div className="mt-1 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-y-1">
-                    <div>SDK listo: <strong>{sdkReady ? "sí" : "no"}</strong></div>
-                    <div>Token: <strong>{PAYPHONE_PUBLIC_TOKEN ? "ok" : "faltante"}</strong></div>
-                    <div>StoreId: <strong>{PAYPHONE_STORE_ID ? "ok" : "faltante"}</strong></div>
-                    <div>Monto (¢): <strong>{amountCents}</strong></div>
-                    <div>Dominio: <strong>{location.host}</strong></div>
+                    <div>
+                        SDK listo: <strong>{sdkReady ? "sí" : "no"}</strong>
+                    </div>
+                    <div>
+                        Token: <strong>{PAYPHONE_PUBLIC_TOKEN ? "ok" : "faltante"}</strong>
+                    </div>
+                    <div>
+                        StoreId: <strong>{PAYPHONE_STORE_ID ? "ok" : "faltante"}</strong>
+                    </div>
+                    <div>
+                        Monto (¢): <strong>{amountCents}</strong>
+                    </div>
+                    <div>
+                        Dominio: <strong>{location.host}</strong>
+                    </div>
+                    {lastHold?.client_tx_id && (
+                        <div>
+                            clientTxId (hold): <strong>{lastHold.client_tx_id}</strong>
+                        </div>
+                    )}
                 </div>
                 {sdkLog.length > 0 && (
                     <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">
@@ -292,7 +329,11 @@ export default function Checkout() {
             </div>
 
             {/* Cajita */}
-            <div id="pp-button" className={`${payReady ? "block" : "hidden"} rounded-xl bg-white border border-emerald-100 p-4`} />
+            <div
+                id="pp-button"
+                className={`${payReady ? "block" : "hidden"
+                    } rounded-xl bg-white border border-emerald-100 p-4`}
+            />
 
             {/* Acciones */}
             <div className="flex items-center justify-end gap-3">
