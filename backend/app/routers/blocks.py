@@ -1,3 +1,4 @@
+# app/routers/blocks.py
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, or_
@@ -11,11 +12,6 @@ from ..utils.tz import to_utc
 
 router = APIRouter(prefix="/blocks", tags=["blocks"])
 
-def overlaps_utc(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime) -> bool:
-    # Asegurar UTC
-    a_start = to_utc(a_start); a_end = to_utc(a_end)
-    b_start = to_utc(b_start); b_end = to_utc(b_end)
-    return (a_start < b_end) and (a_end > b_start)
 
 # Crear un bloqueo (vacaciones, día u horas)
 @router.post(
@@ -24,43 +20,54 @@ def overlaps_utc(a_start: datetime, a_end: datetime, b_start: datetime, b_end: d
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_role(models.UserRole.doctor))],
 )
-def create_block(payload: schemas.CalendarBlockCreate, current=Depends(get_current_user), db: Session = Depends(get_db)):
-    # La doctora sólo puede crear para sí misma (o deja una puerta para admin)
-    if current.role != models.UserRole.doctor and payload.doctor_id != current.id:
-        raise HTTPException(403, "No puedes crear bloqueos para otro doctor.")
+def create_block(
+    payload: schemas.CalendarBlockCreate,
+    current = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # La doctora sólo puede crear para sí misma
+    if payload.doctor_id != current.id:
+        raise HTTPException(status_code=403, detail="No puedes crear bloqueos para otra doctora.")
 
     s = to_utc(payload.start_at)
     e = to_utc(payload.end_at)
     if e <= s:
-        raise HTTPException(400, "Rango horario inválido")
+        raise HTTPException(status_code=400, detail="Rango horario inválido")
 
-    # Opcional: no permitir pasado
+    # Opcional: no permitir completamente en el pasado
     now = datetime.now(timezone.utc)
     if e <= now:
-        raise HTTPException(400, "No puedes bloquear tiempo completamente en el pasado.")
+        raise HTTPException(status_code=400, detail="No puedes bloquear tiempo completamente en el pasado.")
 
-    # 1) Conflictos con citas confirmadas o pendientes (vigentes)
-    #    Si hay, rechazamos (v1). Podrías agregar un flag 'force' para reagendar/cancelar en masa en otra iteración.
+    # 1) Conflictos con citas confirmadas o pendientes (con hold vigente)
+    status_processing = getattr(models.AppointmentStatus, "processing", models.AppointmentStatus.pending)
+
     appt_stmt = (
-        select(models.Appointment)
+        select(models.Appointment.id)
         .where(models.Appointment.doctor_id == payload.doctor_id)
+        .where(models.Appointment.start_at < e)
+        .where(models.Appointment.end_at > s)
         .where(
             or_(
                 models.Appointment.status == models.AppointmentStatus.confirmed,
-                models.Appointment.status == models.AppointmentStatus.pending,
+                and_(
+                    models.Appointment.status.in_([models.AppointmentStatus.pending, status_processing]),
+                    or_(
+                        models.Appointment.hold_until == None,  # noqa: E711
+                        models.Appointment.hold_until > now,
+                    ),
+                ),
             )
         )
-        .where(models.Appointment.start_at < e)
-        .where(models.Appointment.end_at > s)
     )
-    conflicts = list(db.scalars(appt_stmt))
-    if conflicts:
+    appt_conflict_id = db.scalar(appt_stmt)
+    if appt_conflict_id:
         raise HTTPException(
-            409,
-            f"Existen {len(conflicts)} cita(s) dentro de ese rango. Reagenda/cancela antes de bloquear."
+            status_code=409,
+            detail="Existen citas dentro de ese rango. Reagenda/cancela antes de bloquear."
         )
 
-    # 2) Guardar el bloqueo
+    # 2) Guardar el bloqueo (guardamos SIEMPRE en UTC)
     b = models.CalendarBlock(
         doctor_id=payload.doctor_id,
         start_at=s,
@@ -73,6 +80,7 @@ def create_block(payload: schemas.CalendarBlockCreate, current=Depends(get_curre
     db.commit()
     db.refresh(b)
     return b
+
 
 # Listar bloqueos por doctor y/o por rango
 @router.get("", response_model=List[schemas.CalendarBlockOut])
@@ -89,12 +97,20 @@ def list_blocks(
     if doctor_id:
         stmt = stmt.where(models.CalendarBlock.doctor_id == doctor_id)
 
+    # Filtros de rango (guardados en UTC)
     if date_from and date_to:
         f = to_utc(date_from); t = to_utc(date_to)
         stmt = stmt.where(models.CalendarBlock.start_at < t).where(models.CalendarBlock.end_at > f)
+    elif date_from:
+        f = to_utc(date_from)
+        stmt = stmt.where(models.CalendarBlock.end_at > f)
+    elif date_to:
+        t = to_utc(date_to)
+        stmt = stmt.where(models.CalendarBlock.start_at < t)
 
     stmt = stmt.offset(skip).limit(limit)
     return list(db.scalars(stmt))
+
 
 # Eliminar bloqueo
 @router.delete(
@@ -102,13 +118,18 @@ def list_blocks(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_role(models.UserRole.doctor))],
 )
-def delete_block(block_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_block(
+    block_id: int,
+    current = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     b = db.get(models.CalendarBlock, block_id)
     if not b:
-        raise HTTPException(404, "No encontrado")
+        raise HTTPException(status_code=404, detail="No encontrado")
 
-    if current.role != models.UserRole.doctor and b.doctor_id != current.id:
-        raise HTTPException(403, "No puedes eliminar bloqueos de otro doctor.")
+    # La doctora sólo puede eliminar sus propios bloqueos
+    if b.doctor_id != current.id:
+        raise HTTPException(status_code=403, detail="No puedes eliminar bloqueos de otra doctora.")
 
     db.delete(b)
     db.commit()

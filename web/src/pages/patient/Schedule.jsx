@@ -103,22 +103,12 @@ function chunkRanges(from, to, maxDays = 31) {
     return chunks
 }
 
-/* =======================
- * PARCHE DE SOLAPES (mix TZ)
- * =======================
- * /availability/slots viene con Z (UTC) -> usar tal cual.
- * /appointments viene SIN zona (naive) -> interpretarlo como UTC agregando Z.
- */
-// Interpreta string ISO como UTC si viene sin zona (caso /appointments actuales)
-const parseAsUTC = (iso) => new Date(hasTZ(iso) ? iso : `${iso}Z`)
-// Interpreta string ISO respetando su zona (caso /availability/slots que ya trae Z)
-const parseWithZone = (iso) => new Date(iso)
-// Solape [start,end) mezclando: slots(Z) vs appointments(naive→UTC)
-const overlapsMixed = (slotStartISO, slotEndISO, apptStartISO, apptEndISO) => {
-    const s1 = parseWithZone(slotStartISO).getTime()
-    const s2 = parseWithZone(slotEndISO).getTime()
-    const a1 = parseAsUTC(apptStartISO).getTime()
-    const a2 = parseAsUTC(apptEndISO).getTime()
+// Solape estándar [start,end) con ISO (con Z)
+const overlapsUTC = (sStartISO, sEndISO, aStartISO, aEndISO) => {
+    const s1 = new Date(sStartISO).getTime()
+    const s2 = new Date(sEndISO).getTime()
+    const a1 = new Date(aStartISO).getTime()
+    const a2 = new Date(aEndISO).getTime()
     return s1 < a2 && a1 < s2
 }
 
@@ -209,13 +199,12 @@ export default function PatientSchedule() {
                     if (Array.isArray(part)) allSlots.push(...part)
                 }
 
-                // 4) Traer citas/bloqueos del doctor y filtrar solapes en el cliente
+                // 4) Traer citas del doctor y filtrar solapes en el cliente
                 let appts = []
                 try {
                     const q2 = new URLSearchParams({
                         doctor_id: String(doctorId),
-                        date_from: from.toISOString(),
-                        date_to: to.toISOString(),
+                        limit: "500",
                     }).toString()
                     appts = await apiGet(`/appointments?${q2}`)
                 } catch {
@@ -235,9 +224,8 @@ export default function PatientSchedule() {
                     })
                     .map((a) => ({ start: a.start_at, end: a.end_at }))
 
-                // ⬇️ Aquí usamos el parche de solape “mixed”
                 const freeSlots = allSlots.filter((s) =>
-                    !blockers.some((b) => overlapsMixed(s.start_at, s.end_at, b.start, b.end))
+                    !blockers.some((b) => overlapsUTC(s.start_at, s.end_at, b.start, b.end))
                 )
 
                 if (DEBUG) {
@@ -246,19 +234,19 @@ export default function PatientSchedule() {
                     console.log("Ahora (GYE):", nowGYE, "→", toLocalYMD(nowGYE), toLocalHM(nowGYE))
                     console.table((allSlots || []).map(s => ({
                         start_iso: s.start_at, end_iso: s.end_at,
-                        start_ms: parseWithZone(s.start_at).getTime(), end_ms: parseWithZone(s.end_at).getTime(),
+                        start_ms: new Date(s.start_at).getTime(), end_ms: new Date(s.end_at).getTime(),
                         start_gye: `${toLocalYMD(s.start_at)} ${toLocalHM(s.start_at)}`,
                         end_gye: `${toLocalYMD(s.end_at)} ${toLocalHM(s.end_at)}`,
                     })))
                     console.table((blockers || []).map(b => ({
                         b_start_iso: b.start, b_end_iso: b.end,
-                        b_start_ms: parseAsUTC(b.start).getTime(), b_end_ms: parseAsUTC(b.end).getTime(),
+                        b_start_ms: new Date(b.start).getTime(), b_end_ms: new Date(b.end).getTime(),
                         b_start_gye: `${toLocalYMD(b.start)} ${toLocalHM(b.start)}`,
                         b_end_gye: `${toLocalYMD(b.end)} ${toLocalHM(b.end)}`,
                     })))
                     console.table((freeSlots || []).map(s => ({
                         free_start_iso: s.start_at, free_end_iso: s.end_at,
-                        free_start_ms: parseWithZone(s.start_at).getTime(), free_end_ms: parseWithZone(s.end_at).getTime(),
+                        free_start_ms: new Date(s.start_at).getTime(), free_end_ms: new Date(s.end_at).getTime(),
                         free_start_gye: `${toLocalYMD(s.start_at)} ${toLocalHM(s.start_at)}`,
                         free_end_gye: `${toLocalYMD(s.end_at)} ${toLocalHM(s.end_at)}`,
                     })))
@@ -366,7 +354,7 @@ export default function PatientSchedule() {
                 <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs flex items-start gap-2">
                     <Info className="h-4 w-4 mt-0.5" />
                     <div>
-                        <div><strong>DEBUG</strong> activo: solapes mezclando slots(Z) vs appointments(naive→UTC).</div>
+                        <div><strong>DEBUG</strong> activo: solapes en UTC puro.</div>
                         <div>Ahora (GYE): {toLocalYMD(nowInGYE().toISOString())} {toLocalHM(nowInGYE().toISOString())}</div>
                     </div>
                 </div>

@@ -10,7 +10,8 @@ from .. import models, schemas
 from ..security import require_role
 from ..utils.tz import (
     TZ_EC,                       # zona base América/Guayaquil
-    to_utc,                      # datetime -> aware UTC
+    to_utc,                      # payload/user input -> aware UTC
+    db_aware_utc,                # valores leídos de BD -> aware UTC (sin sorpresas)
     aware_to_local_naive,        # aware UTC -> naive local (Ecuador)
     local_naive_to_aware_utc,    # naive local (Ecuador) -> aware UTC
 )
@@ -40,12 +41,6 @@ def delete_stale_holds(db: Session) -> int:
     )
     if not stale_ids:
         return 0
-
-    # Si tienes scheduler/cancel_reminder_job aquí podrías importarlo y cancelarlo.
-    # from ..scheduler import cancel_reminder_job
-    # for appt_id in stale_ids:
-    #     try: cancel_reminder_job(appt_id)
-    #     except Exception: pass
 
     # Borrado real
     for appt_id in stale_ids:
@@ -294,7 +289,7 @@ def get_available_slots(
     if not rule_by_weekday:
         return []
 
-    # 4) Traer citas ocupadas (UTC aware) y convertir a LOCAL naive
+    # 4) Traer citas ocupadas (de BD → db_aware_utc) y convertir a LOCAL naive
     now_utc = datetime.now(timezone.utc)
 
     busy_stmt = (
@@ -317,8 +312,8 @@ def get_available_slots(
     busy_appts = list(db.scalars(busy_stmt))
     busy_intervals_local = [
         (
-            aware_to_local_naive(to_utc(a.start_at)),
-            aware_to_local_naive(to_utc(a.end_at)),
+            aware_to_local_naive(db_aware_utc(a.start_at)),
+            aware_to_local_naive(db_aware_utc(a.end_at)),
         )
         for a in busy_appts
     ]
@@ -333,8 +328,8 @@ def get_available_slots(
     blocks = list(db.scalars(blocks_stmt))
     block_intervals_local = [
         (
-            aware_to_local_naive(to_utc(b.start_at)),
-            aware_to_local_naive(to_utc(b.end_at)),
+            aware_to_local_naive(db_aware_utc(b.start_at)),
+            aware_to_local_naive(db_aware_utc(b.end_at)),
         )
         for b in blocks
     ]

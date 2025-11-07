@@ -15,7 +15,7 @@ from ..mailer.notifications import send_confirmed_emails, send_rescheduled_email
 from ..scheduler import schedule_reminder_job, cancel_reminder_job
 
 # 🔹 Utilidades TZ centralizadas
-from ..utils.tz import to_utc, iso_utc_z
+from ..utils.tz import to_utc, db_aware_utc, iso_utc_z
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
@@ -186,6 +186,7 @@ async def create_appt(
         if not settings.ZOOM_DEFAULT_USER:
             raise HTTPException(500, detail="ZOOM_DEFAULT_USER no configurado")
 
+        # ✅ Zoom en UTC (Z) y sin timezone
         start_iso = iso_utc_z(s)
         duration = int((e - s).total_seconds() // 60) or 45
 
@@ -195,7 +196,7 @@ async def create_appt(
                 topic=f"Cita {appt.id} - Doctor {appt.doctor_id}",
                 start_time_iso=start_iso,
                 duration_minutes=duration,
-                timezone="America/Guayaquil",
+                timezone=None,  # usamos UTC → no enviamos timezone
                 waiting_room=True,
                 join_before_host=False,
             )
@@ -415,7 +416,6 @@ def hold_appointments(
         db.refresh(a)
 
     # ✅ Devolvemos SOLO las citas (sin client_tx_id)
-    # Asegúrate de que schemas.AppointmentHoldOut tenga este shape (o client_tx_id sea Optional)
     return {"appointments": to_create}
 
 
@@ -461,15 +461,16 @@ async def confirm_appt(
     if appt.status not in (models.AppointmentStatus.pending, models.AppointmentStatus.free):
         raise HTTPException(400, detail="Estado inválido para confirmar")
 
-    s = to_utc(appt.start_at)
-    e = to_utc(appt.end_at)
+    # ✅ Valores desde BD → db_aware_utc
+    s = db_aware_utc(appt.start_at)
+    e = db_aware_utc(appt.end_at)
     if e <= s:
         raise HTTPException(status_code=400, detail="Rango horario inválido")
 
     now_utc = datetime.now(timezone.utc)
     # Si el hold expiró, revalida conflictos y limpia hold_until si aún sigue disponible
     if appt.status == models.AppointmentStatus.pending and appt.method == models.PaymentMethod.payphone:
-        if appt.hold_until and now_utc > to_utc(appt.hold_until):
+        if appt.hold_until and now_utc > db_aware_utc(appt.hold_until):
             if has_conflict_or_block(db, doctor_id=appt.doctor_id, start_utc=s, end_utc=e, exclude_appt_id=appt.id):
                 raise HTTPException(400, detail="El horario fue tomado o bloqueado; el paciente debe elegir otro.")
             appt.hold_until = None
@@ -483,6 +484,7 @@ async def confirm_appt(
         if not settings.ZOOM_DEFAULT_USER:
             raise HTTPException(500, detail="ZOOM_DEFAULT_USER no configurado")
 
+        # ✅ Zoom en UTC (Z) y sin timezone
         start_iso = iso_utc_z(s)
         duration = int((e - s).total_seconds() // 60) or 45
 
@@ -491,7 +493,7 @@ async def confirm_appt(
             topic=f"Cita {appt.id} - Doctor {appt.doctor_id}",
             start_time_iso=start_iso,
             duration_minutes=duration,
-            timezone="America/Guayaquil",
+            timezone=None,  # usamos UTC → no pasamos timezone
             waiting_room=True,
             join_before_host=False,
         )
@@ -537,7 +539,8 @@ async def reschedule_appt(
         raise HTTPException(403, "No tienes permiso para reagendar esta cita")
 
     now = datetime.now(timezone.utc)
-    cur_start = to_utc(appt.start_at)
+    # ✅ Valor desde BD → db_aware_utc
+    cur_start = db_aware_utc(appt.start_at)
     if (cur_start - now).total_seconds() < 4 * 3600:
         raise HTTPException(400, "Solo puedes reagendar hasta 4 horas antes del inicio")
 
@@ -558,7 +561,7 @@ async def reschedule_appt(
     # Si estaba confirmada y hay reunión Zoom → actualizarla
     if appt.status == models.AppointmentStatus.confirmed and appt.zoom_meeting_id:
         try:
-            # Usamos UTC con 'Z'
+            # ✅ Usamos UTC con 'Z' y sin timezone
             start_iso = iso_utc_z(new_s)
             duration = max(1, int((new_e - new_s).total_seconds() // 60))
 

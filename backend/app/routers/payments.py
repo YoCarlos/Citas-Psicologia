@@ -1,28 +1,33 @@
 # app/routers/payments.py
 from __future__ import annotations
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, or_
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+import logging
 
 from ..db import get_db
 from .. import models, schemas
 from ..security import get_current_user, require_role
 from ..config import settings
-from ..utils.tz import to_utc  # usamos to_utc; ver nota de Zoom más abajo
-from ..mailer.notifications import send_confirmed_emails_by_id  # versión segura por ID
+from ..utils.tz import (
+    to_utc,          # para entradas externas (si viniera naive => Ecuador)
+    db_aware_utc,    # para valores leídos de BD (si viniera naive => UTC)
+)
+from ..mailer.notifications import send_confirmed_emails_by_id  # seguro por ID
 from ..scheduler import schedule_reminder_job_by_id              # agenda por ID
 from ..zoom_client import zoom
 from ..payphone_client import confirm_button, PayphoneError
 
 router = APIRouter(prefix="/payments", tags=["payments"])
+logger = logging.getLogger(__name__)
 
 GYE = ZoneInfo("America/Guayaquil")
 
 
-# ---- helpers de conflictos (copiado del router de citas para evitar circular imports)
+# ---- helpers de conflictos (copiado/ajustado para evitar circular imports)
 def _has_conflict_or_block(
     db: Session,
     *,
@@ -31,6 +36,11 @@ def _has_conflict_or_block(
     end_utc: datetime,
     exclude_appt_id: Optional[int] = None,
 ) -> bool:
+    """
+    Evalúa conflictos en SQL: citas confirmadas o pendientes (hold vigente)
+    y bloques de calendario que crucen [start_utc, end_utc).
+    Se espera start_utc/end_utc AWARE UTC.
+    """
     now_utc = datetime.now(timezone.utc)
 
     appt_stmt = (
@@ -98,23 +108,48 @@ def _zoom_start_iso_local_gye(start_utc: datetime) -> str:
     return local_dt.isoformat(timespec="seconds")
 
 
+def _fmt_diag_times(s_utc: datetime, e_utc: datetime) -> Dict[str, str]:
+    """Pequeño helper para adjuntar horarios en UTC y en GYE (texto)."""
+    s_gye = s_utc.astimezone(GYE)
+    e_gye = e_utc.astimezone(GYE)
+    return {
+        "start_utc": s_utc.replace(microsecond=0).isoformat(),
+        "end_utc": e_utc.replace(microsecond=0).isoformat(),
+        "start_gye": s_gye.replace(microsecond=0).isoformat(),
+        "end_gye": e_gye.replace(microsecond=0).isoformat(),
+    }
+
+
 async def _confirm_single_appointment(
     db: Session,
     appt: models.Appointment
-) -> Tuple[Optional[int], Optional[str]]:
+) -> Tuple[Optional[int], Optional[str], Dict[str, str]]:
     """
     Confirma una cita:
     - Revalida conflictos (teniendo en cuenta holds de terceros).
     - Crea Zoom si falta (si falla, no aborta la confirmación).
     - Cambia estado a confirmed y limpia hold_until.
     - NO hace commit; el llamador hace commit/flush.
-    Retorna (confirmed_id, error_msg). Si confirmed_id es None, hubo error.
+    Retorna (confirmed_id, error_msg, diag_times).
+      - confirmed_id: int si OK; None si falla
+      - error_msg: razón si falla
+      - diag_times: dict con start/end en UTC y GYE para logs/depuración
     """
     try:
-        s_utc = to_utc(appt.start_at)
-        e_utc = to_utc(appt.end_at)
+        # Usar db_aware_utc por seguridad al leer desde BD
+        s_utc = db_aware_utc(appt.start_at)
+        e_utc = db_aware_utc(appt.end_at)
+        diag = _fmt_diag_times(s_utc, e_utc)
+
+        logger.info(
+            "[payments] Intentando confirmar cita %s (doctor=%s, patient=%s) "
+            "s_utc=%s e_utc=%s s_gye=%s e_gye=%s",
+            appt.id, appt.doctor_id, appt.patient_id,
+            diag["start_utc"], diag["end_utc"], diag["start_gye"], diag["end_gye"]
+        )
+
         if e_utc <= s_utc:
-            return (None, "Rango horario inválido")
+            return (None, "Rango horario inválido", diag)
 
         # Validar conflictos a última hora
         if _has_conflict_or_block(
@@ -124,7 +159,7 @@ async def _confirm_single_appointment(
             end_utc=e_utc,
             exclude_appt_id=appt.id
         ):
-            return (None, "Conflicto con otro evento/hold")
+            return (None, "Conflicto con otro evento/hold", diag)
 
         # Crear Zoom si falta (sin abortar si falla)
         if not appt.zoom_meeting_id or not appt.zoom_join_url:
@@ -138,15 +173,19 @@ async def _confirm_single_appointment(
                 z = await zoom.create_meeting(
                     user_id=settings.ZOOM_DEFAULT_USER,
                     topic=f"Cita {appt.id} - Doctor {appt.doctor_id}",
-                    start_time_iso=start_local_iso,     # <- HORA LOCAL GYE, sin 'Z'
+                    start_time_iso=start_local_iso,     # HORA LOCAL GYE (sin 'Z')
                     duration_minutes=duration,
-                    timezone="America/Guayaquil",       # <- timezone declarado
+                    timezone="America/Guayaquil",       # timezone declarado
                     waiting_room=True,
                     join_before_host=False,
                 )
                 appt.zoom_meeting_id = str(z.get("id"))
                 appt.zoom_join_url = z.get("join_url")
-            except Exception:
+            except Exception as ex:
+                logger.warning(
+                    "[payments] No se pudo crear Zoom para cita %s: %s",
+                    appt.id, ex
+                )
                 # No abortar: seguimos sin link (podrás reintentar luego)
                 appt.zoom_meeting_id = None
                 appt.zoom_join_url = None
@@ -155,11 +194,13 @@ async def _confirm_single_appointment(
         appt.status = models.AppointmentStatus.confirmed
         appt.hold_until = None
 
-        return (appt.id, None)
+        logger.info("[payments] Cita %s confirmada OK", appt.id)
+        return (appt.id, None, diag)
+
     except HTTPException as hex:
-        return (None, hex.detail or "HTTPException")
+        return (None, hex.detail or "HTTPException", _fmt_diag_times(db_aware_utc(appt.start_at), db_aware_utc(appt.end_at)))
     except Exception as ex:
-        return (None, str(ex))
+        return (None, str(ex), _fmt_diag_times(db_aware_utc(appt.start_at), db_aware_utc(appt.end_at)))
 
 
 @router.post(
@@ -179,7 +220,7 @@ async def payphone_confirm(
     - Lee optionalParameter3 = 'appts=ID1,ID2,...' y confirma SOLO esas citas (nuevo flujo)
     - Si no llega optionalParameter3, cae al flujo anterior por clientTxId (legado)
     - Registra Payment idempotente por payphone_tx_id (transactionId)
-    - Devuelve también failed_appointments con motivo para depurar
+    - Devuelve también failed_appointments con motivo y horarios (UTC/GYE) para depurar
     """
     # 1) Consultar PayPhone
     try:
@@ -193,19 +234,21 @@ async def payphone_confirm(
     transaction_id = int(resp.get("transactionId") or payload.id)
     client_tx_id = resp.get("clientTransactionId") or payload.clientTxId or ""
     amount = int(resp.get("amount") or 0)  # centavos
-
-    # NUEVO: ids desde optionalParameter3
     opt3 = resp.get("optionalParameter3")  # p.ej. "appts=12,34,56"
     appt_ids_from_opt3 = _parse_optional_appt_ids(opt3)
 
     approved = (transaction_status.lower() == "approved") and (status_code == 3)
+
+    logger.info(
+        "[payments] Payphone confirm tx_id=%s approved=%s client_tx_id=%s opt3=%s",
+        transaction_id, approved, client_tx_id, opt3
+    )
 
     # 2) Idempotencia por pago
     existing_payment = db.scalar(
         select(models.Payment).where(models.Payment.payphone_tx_id == str(transaction_id))
     )
     if existing_payment:
-        # Ya registrado antes: devolvemos éxito con info
         if appt_ids_from_opt3:
             appts = list(db.scalars(
                 select(models.Appointment).where(models.Appointment.id.in_(appt_ids_from_opt3))
@@ -218,6 +261,11 @@ async def payphone_confirm(
             ))
         confirmed_ids = [a.id for a in appts if a.status == models.AppointmentStatus.confirmed]
 
+        logger.info(
+            "[payments] Pago idempotente tx_id=%s -> confirmed=%s",
+            transaction_id, confirmed_ids
+        )
+
         return schemas.PayphoneConfirmOut(
             transaction_status=transaction_status,
             status_code=status_code,
@@ -228,12 +276,15 @@ async def payphone_confirm(
             confirmed_appointment_ids=confirmed_ids,
             payment_id=existing_payment.id,
             message="Pago ya había sido registrado (idempotente).",
-            # Extras de diagnóstico
             failed_appointments=[]
         )
 
     # 3) Si NO está aprobado, respondemos sin confirmar nada
     if not approved:
+        logger.info(
+            "[payments] Transacción NO aprobada (tx_id=%s): status=%s code=%s msg=%s",
+            transaction_id, transaction_status, status_code, resp.get("message")
+        )
         return schemas.PayphoneConfirmOut(
             transaction_status=transaction_status,
             status_code=status_code,
@@ -260,7 +311,7 @@ async def payphone_confirm(
             ]))
         ))
     else:
-        # LEGADO: por client_tx_id (si aún hay citas con ese vínculo)
+        # LEGADO: por client_tx_id
         target_appts = list(db.scalars(
             select(models.Appointment)
             .where(models.Appointment.client_tx_id == client_tx_id)
@@ -272,17 +323,30 @@ async def payphone_confirm(
             ]))
         ))
 
+    logger.info(
+        "[payments] Citas objetivo para confirmar (tx=%s): %s",
+        transaction_id, [a.id for a in target_appts]
+    )
+
     confirmed_ids: List[int] = []
-    failed: List[dict] = []
+    failed: List[Dict[str, Any]] = []
 
     # 5) Confirmar cada cita (saltando conflictos/errores individualmente)
     for appt in target_appts:
-        appt_id = appt.id
-        ok_id, err = await _confirm_single_appointment(db, appt)
+        ok_id, err, diag = await _confirm_single_appointment(db, appt)
         if ok_id:
             confirmed_ids.append(ok_id)
         else:
-            failed.append({"appointment_id": appt_id, "reason": err or "unknown"})
+            logger.info(
+                "[payments] Cita %s NO confirmada: %s | diag=%s",
+                appt.id, err, diag
+            )
+            # enriquecer con horarios para depurar TZ
+            failed.append({
+                "appointment_id": appt.id,
+                "reason": err or "unknown",
+                **diag
+            })
 
     # 6) Registrar Payment si al menos una cita fue confirmada
     payment_row: Optional[models.Payment] = None
@@ -309,6 +373,11 @@ async def payphone_confirm(
     for appt_id in confirmed_ids:
         bg.add_task(send_confirmed_emails_by_id, appt_id)
         bg.add_task(schedule_reminder_job_by_id, appt_id)
+
+    logger.info(
+        "[payments] Resultado confirmación tx=%s -> confirmed=%s failed=%s",
+        transaction_id, confirmed_ids, [f.get("appointment_id") for f in failed]
+    )
 
     return schemas.PayphoneConfirmOut(
         transaction_status=transaction_status,

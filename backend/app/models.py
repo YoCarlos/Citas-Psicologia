@@ -375,8 +375,8 @@ class CalendarBlock(Base):
     doctor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
 
     # Guardamos SIEMPRE en UTC
-    start_at: Mapped[datetime] = mapped_column(nullable=False)
-    end_at:   Mapped[datetime] = mapped_column(nullable=False)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     # Opcional: marcar si es "todo el día" (conveniente para UI)
     all_day:  Mapped[bool] = mapped_column(default=False)
