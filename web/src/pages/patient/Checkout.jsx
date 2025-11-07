@@ -12,12 +12,12 @@ const PAYPHONE_BOX_JS =
 const PAYPHONE_BOX_CSS =
     import.meta.env.VITE_PAYPHONE_BOX_CSS ||
     "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.css"
-const PAYPHONE_PUBLIC_TOKEN = import.meta.env.VITE_PAYPHONE_TOKEN || ""
-const PAYPHONE_STORE_ID = import.meta.env.VITE_PAYPHONE_STORE_ID || ""
-const TZ = "America/Guayaquil"
-const TIMEZONE_OFFSET = -5 // Ecuador (sin DST)
+const PAYPHONE_PUBLIC_TOKEN = import.meta.env.VITE_PAYPHONE_TOKEN || "" // requerido
+const PAYPHONE_STORE_ID = import.meta.env.VITE_PAYPHONE_STORE_ID || ""  // requerido
 
-// --- helpers de hora y fecha ---
+const TZ = "America/Guayaquil"
+
+// helpers de fecha (solo UI)
 const toLocalHM = (isoString) =>
     new Date(isoString).toLocaleTimeString("es-EC", {
         hour: "2-digit",
@@ -25,6 +25,7 @@ const toLocalHM = (isoString) =>
         hour12: false,
         timeZone: TZ,
     })
+
 const toLocalYMD = (isoString) => {
     const d = new Date(isoString)
     const y = d.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
@@ -32,6 +33,7 @@ const toLocalYMD = (isoString) => {
     const day = d.toLocaleString("en-CA", { day: "2-digit", timeZone: TZ })
     return `${y}-${m}-${day}`
 }
+
 function groupByDay(items) {
     const map = {}
     for (const it of items) {
@@ -76,12 +78,14 @@ export default function Checkout() {
 
     // === Cargar SDK ===
     React.useEffect(() => {
+        // CSS
         if (!document.querySelector(`link[href="${PAYPHONE_BOX_CSS}"]`)) {
             const link = document.createElement("link")
             link.rel = "stylesheet"
             link.href = PAYPHONE_BOX_CSS
             document.head.appendChild(link)
         }
+        // JS
         if (!document.querySelector(`script[src="${PAYPHONE_BOX_JS}"]`)) {
             const s = document.createElement("script")
             s.type = "module"
@@ -107,7 +111,7 @@ export default function Checkout() {
 
     const goBack = () => nav(-1)
 
-    // === Renderizar cajita PayPhone con validación ===
+    // === Renderizar Cajita (campos mínimos según ejemplo oficial) ===
     const renderPayphoneBox = React.useCallback(
         (opts) => {
             const PPB = window.PPaymentButtonBox || globalThis.PPaymentButtonBox
@@ -119,34 +123,19 @@ export default function Checkout() {
             if (!container) return false
             container.innerHTML = ""
 
-            // ✅ limpiar y validar número
-            let phone = (user?.phone || "").replace(/^\+593/, "0").replace(/\D/g, "")
-            if (!/^09\d{8}$/.test(phone)) {
-                setErrorMsg(
-                    "Tu número de teléfono no es válido para PayPhone. Debe empezar con 09 y tener 10 dígitos (Ej: 0984234698)."
-                )
-                log("Número inválido:", phone)
-                return false
-            }
-
             try {
                 new PPB({
                     token: PAYPHONE_PUBLIC_TOKEN,
-                    amount: opts.amount,
-                    amountWithoutTax: opts.amount,
+                    clientTransactionId: opts.clientTransactionId, // ID único de esta transacción
+                    amount: opts.amount,                // total en centavos
+                    amountWithoutTax: opts.amount,      // todo sin IVA (ajusta si usas impuestos)
                     amountWithTax: 0,
                     tax: 0,
-                    service: 0,
-                    tip: 0,
                     currency: "USD",
                     storeId: PAYPHONE_STORE_ID,
-                    reference: opts.reference,
-                    clientTransactionId: opts.clientTransactionId,
-                    defaultMethod: "card",
-                    timeZone: TIMEZONE_OFFSET,
-                    phoneNumber: phone,
-                    email: user?.email || "",
-                    optionalParameter3: opts.appointmentIds.join(","), // para confirmar luego
+                    reference: opts.reference || "Cita Psicología",
+                    // opcionales no críticos: puedes enviar IDs para reconciliar en el return
+                    optionalParameter3: (opts.appointmentIds || []).join(","),
                 }).render("pp-button")
 
                 log("Cajita renderizada con clientTx:", opts.clientTransactionId)
@@ -157,10 +146,10 @@ export default function Checkout() {
                 return false
             }
         },
-        [log, user]
+        [log]
     )
 
-    // === Flujo principal: HOLD + Render Cajita ===
+    // === Flujo: HOLD + render Cajita ===
     const confirm = async () => {
         setOkMsg("")
         setErrorMsg("")
@@ -168,6 +157,7 @@ export default function Checkout() {
         setLoading(true)
 
         try {
+            // 1) BLOQUEAR HORARIOS
             const payload = {
                 doctor_id: doctorId,
                 method: "payphone",
@@ -184,15 +174,14 @@ export default function Checkout() {
             setLastHold(res)
             const appointmentIds = res.appointments.map((a) => a.id)
             const holdCount = appointmentIds.length
-            setOkMsg(
-                `Se bloquearon ${holdCount} horario(s) por ${holdMinutes} minutos. Procede al pago.`
-            )
+            setOkMsg(`Se bloquearon ${holdCount} horario(s) por ${holdMinutes} minutos. Procede al pago.`)
             setPayReady(true)
 
+            // 2) CLIENT TX (lo generamos aquí; el backend confirmará por return URL)
             const clientTx = `tx-${Date.now()}-${Math.floor(Math.random() * 9999)}`
             const refText = `cita-${clientTx}`
 
-            if (!sdkReady) await new Promise((r) => setTimeout(r, 300))
+            if (!sdkReady) await new Promise((r) => setTimeout(r, 200))
 
             const ok = renderPayphoneBox({
                 amount: amountCents,
@@ -213,6 +202,7 @@ export default function Checkout() {
 
     return (
         <div className="space-y-6">
+            {/* Header */}
             <div className="flex items-start justify-between gap-3">
                 <div>
                     <h1 className="text-2xl font-bold text-emerald-800">Confirmar reserva</h1>
@@ -235,31 +225,26 @@ export default function Checkout() {
                     <p className="mt-2 text-sm text-gray-500">No hay horarios seleccionados.</p>
                 ) : (
                     <div className="mt-3 space-y-4">
-                        {Object.keys(grouped)
-                            .sort()
-                            .map((ymd) => (
-                                <div key={ymd}>
-                                    <div className="text-sm font-medium text-gray-700">{ymd}</div>
-                                    <div className="mt-2 flex flex-wrap gap-2">
-                                        {grouped[ymd].map((it) => (
-                                            <span
-                                                key={`${it.start_at}-${it.end_at}`}
-                                                className="px-2 py-1 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-mono tabular-nums whitespace-nowrap"
-                                            >
-                                                {toLocalHM(it.start_at)}–{toLocalHM(it.end_at)}
-                                            </span>
-                                        ))}
-                                    </div>
+                        {Object.keys(grouped).sort().map((ymd) => (
+                            <div key={ymd}>
+                                <div className="text-sm font-medium text-gray-700">{ymd}</div>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                    {grouped[ymd].map((it) => (
+                                        <span
+                                            key={`${it.start_at}-${it.end_at}`}
+                                            className="px-2 py-1 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-mono tabular-nums whitespace-nowrap"
+                                        >
+                                            {toLocalHM(it.start_at)}–{toLocalHM(it.end_at)}
+                                        </span>
+                                    ))}
                                 </div>
-                            ))}
+                            </div>
+                        ))}
                         <div className="pt-3 border-t flex items-center justify-between">
                             <div className="text-sm text-gray-700">
-                                {items.length} {items.length === 1 ? "slot" : "slots"} × $
-                                {priceUSD.toFixed(2)}
+                                {items.length} {items.length === 1 ? "slot" : "slots"} × ${priceUSD.toFixed(2)}
                             </div>
-                            <div className="text-lg font-semibold text-emerald-800">
-                                Total: ${totalUSD.toFixed(2)}
-                            </div>
+                            <div className="text-lg font-semibold text-emerald-800">Total: ${totalUSD.toFixed(2)}</div>
                         </div>
                     </div>
                 )}
@@ -269,8 +254,8 @@ export default function Checkout() {
             <section className="rounded-2xl bg-white p-5 border border-blue-100 shadow-sm">
                 <h2 className="font-semibold text-blue-900">Pago con tarjeta</h2>
                 <p className="text-sm text-gray-600 mt-1">
-                    Primero bloqueamos tu horario <strong>por {holdMinutes} minutos</strong> y luego
-                    pagas con PayPhone. La Cajita se mostrará abajo.
+                    Primero bloqueamos tu horario <strong>por {holdMinutes} minutos</strong> y luego pagas con PayPhone.
+                    La Cajita se mostrará abajo.
                 </p>
                 <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
                     <Clock className="h-4 w-4" />
@@ -278,6 +263,7 @@ export default function Checkout() {
                 </div>
             </section>
 
+            {/* Mensajes */}
             {errorMsg && (
                 <div className="rounded-lg border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
                     {errorMsg}
@@ -312,11 +298,10 @@ export default function Checkout() {
                 )}
             </div>
 
-            <div
-                id="pp-button"
-                className={`${payReady ? "block" : "hidden"} rounded-xl bg-white border border-emerald-100 p-4`}
-            />
+            {/* Contenedor cajita */}
+            <div id="pp-button" className={`${payReady ? "block" : "hidden"} rounded-xl bg-white border border-emerald-100 p-4`} />
 
+            {/* Acciones */}
             <div className="flex items-center justify-end gap-3">
                 <button
                     type="button"
