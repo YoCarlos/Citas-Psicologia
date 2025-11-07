@@ -8,11 +8,7 @@ import { CheckCircle2, XCircle, ArrowLeft, CalendarClock, Info } from "lucide-re
 const TZ = "America/Guayaquil"
 const hasTZ = (s) => /Z$|[+\-]\d{2}:\d{2}$/.test(s || "")
 
-/**
- * IMPORTANTE:
- * Si la cadena ISO no tiene zona horaria, la tratamos como UTC (añadimos 'Z'),
- * NO como -05:00. Luego siempre formateamos al huso de Guayaquil.
- */
+// Si no trae zona, lo tratamos como UTC (Z) y luego mostramos en America/Guayaquil
 const parseAsUTC = (iso) => new Date(hasTZ(iso) ? iso : `${iso}Z`)
 
 const toLocalYMD = (iso) => {
@@ -37,97 +33,86 @@ export default function PaymentResult() {
 
     const user = getUserFromToken()
 
-    // PayPhone puede enviarte transactionId como ?id= o ?transactionId=
     const txnIdStr = sp.get("id") || sp.get("transactionId") || ""
-
-    // Tus citas vienen como "appts=58,59,60,61,62" en optionalParameter3
-    const rawAppts = sp.get("optionalParameter3") || ""
-    const csv = rawAppts.startsWith("appts=") ? rawAppts.slice(6) : rawAppts
-    const appointmentIds = csv
-        .split(",")
-        .map((s) => parseInt(s.trim(), 10))
-        .filter((n) => Number.isFinite(n) && n > 0)
+    const clientTx = sp.get("clientTransactionId") || sp.get("reference") || ""
 
     const [loading, setLoading] = React.useState(true)
     const [errorMsg, setErrorMsg] = React.useState("")
     const [okMsg, setOkMsg] = React.useState("")
+    const [result, setResult] = React.useState(null)
     const [confirmedAppts, setConfirmedAppts] = React.useState([])
-    const [debugInfo, setDebugInfo] = React.useState([])
+    const [debugBlock, setDebugBlock] = React.useState(null)
 
     const goToMyAppts = () => nav("/paciente/citas")
 
     const fetchApptDetails = React.useCallback(async (ids) => {
+        const safe = (ids || []).filter((x) => Number.isFinite(Number(x)))
         const details = await Promise.all(
-            ids.map(async (id) => {
-                try {
-                    const a = await apiGet(`/appointments/${id}`)
-                    return a
-                } catch {
-                    return null
-                }
+            safe.map(async (id) => {
+                try { return await apiGet(`/appointments/${id}`) } catch { return null }
             })
         )
         return details.filter(Boolean)
     }, [])
 
-    const confirmAppointments = React.useCallback(async () => {
+    const doServerConfirm = React.useCallback(async () => {
         setLoading(true)
         setErrorMsg("")
         setOkMsg("")
+        setResult(null)
         setConfirmedAppts([])
-        setDebugInfo([])
 
         try {
             if (!user?.id) {
                 setErrorMsg("No hay sesión activa de paciente.")
                 return
             }
-            if (!appointmentIds.length) {
-                setErrorMsg("No se detectaron citas asociadas a este pago.")
+            if (!txnIdStr || !clientTx) {
+                setErrorMsg("Faltan parámetros en la URL (id y/o clientTransactionId).")
                 return
             }
 
-            const confirmed = []
-            for (const id of appointmentIds) {
-                try {
-                    const res = await apiPost(`/appointments/${id}/confirm`, {})
-                    confirmed.push(res)
-                } catch (err) {
-                    // Seguimos con las demás aunque una falle por conflicto/expiración
-                    // eslint-disable-next-line no-console
-                    console.error(`Error al confirmar cita ${id}:`, err)
-                }
+            // 1) El backend valida con PayPhone, extrae appts desde optionalParameter3 y confirma en lote
+            const payload = {
+                id: Number.isFinite(Number(txnIdStr)) ? Number(txnIdStr) : txnIdStr,
+                clientTxId: clientTx,
             }
+            const resp = await apiPost("/payments/payphone/confirm", payload)
+            setResult(resp)
+            setDebugBlock({ payload, resp })
 
-            if (confirmed.length > 0) {
-                setConfirmedAppts(confirmed)
-                setOkMsg(`Se confirmaron ${confirmed.length} cita(s) correctamente. ¡Pago verificado! ✅`)
-
-                // Debug visual de las horas originales y cómo se renderizan
-                const dbg = confirmed.map((a) => ({
-                    id: a.id,
-                    raw_start: a.start_at,
-                    raw_end: a.end_at,
-                    shown_start: `${toLocalYMD(a.start_at)} ${toLocalHM(a.start_at)}`,
-                    shown_end: toLocalHM(a.end_at),
-                    status: a.status,
-                }))
-                setDebugInfo(dbg)
+            // 2) Mostrar resultado
+            if (resp?.approved) {
+                const ids = resp?.confirmed_appointment_ids || []
+                if (ids.length > 0) {
+                    const details = await fetchApptDetails(ids)
+                    setConfirmedAppts(details)
+                    setOkMsg("¡Pago verificado! Tus horarios fueron confirmados ✅")
+                } else {
+                    setOkMsg(resp?.message || "Pago aprobado. No hay nuevas confirmaciones.")
+                }
             } else {
-                setErrorMsg("No se pudo confirmar ninguna cita. Si el pago fue exitoso, contacta soporte.")
+                setErrorMsg(resp?.message || "Transacción no aprobada.")
             }
         } catch (e) {
             // eslint-disable-next-line no-console
-            console.error("[PaymentResult] confirm error:", e)
+            console.error("[PaymentResult] server-confirm error:", e)
             setErrorMsg(e?.message || "No se pudo procesar el resultado del pago.")
         } finally {
             setLoading(false)
         }
-    }, [appointmentIds, user?.id])
+    }, [clientTx, txnIdStr, user?.id, fetchApptDetails])
 
     React.useEffect(() => {
-        confirmAppointments()
-    }, [confirmAppointments])
+        doServerConfirm()
+    }, [doServerConfirm])
+
+    const txnIdShown = result?.transaction_id || txnIdStr || "—"
+    const statusShown = result?.transaction_status || (result?.approved ? "Approved" : "—")
+    const clientTxShown = result?.client_tx_id || clientTx || "—"
+    const amountShown = Number.isFinite(Number(result?.amount_cents))
+        ? (Number(result.amount_cents) / 100).toFixed(2)
+        : "—"
 
     return (
         <div className="space-y-6">
@@ -135,7 +120,7 @@ export default function PaymentResult() {
             <div className="flex items-start justify-between">
                 <div>
                     <h1 className="text-2xl font-bold text-emerald-800">Resultado del pago</h1>
-                    <p className="text-gray-600">Verificando y confirmando tus horarios reservados.</p>
+                    <p className="text-gray-600">Validando tu transacción con PayPhone y confirmando tus horarios.</p>
                 </div>
                 <button
                     onClick={goToMyAppts}
@@ -146,7 +131,7 @@ export default function PaymentResult() {
                 </button>
             </div>
 
-            {/* Card principal */}
+            {/* Card */}
             <div className="rounded-2xl bg-white p-5 border shadow-sm">
                 {loading ? (
                     <div className="flex items-center gap-3 text-sm text-gray-600">
@@ -154,7 +139,7 @@ export default function PaymentResult() {
                             <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" opacity="0.25" />
                             <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" strokeWidth="4" />
                         </svg>
-                        Confirmando citas con el servidor…
+                        Procesando pago y reservas…
                     </div>
                 ) : (
                     <>
@@ -169,13 +154,34 @@ export default function PaymentResult() {
                             </div>
                         )}
 
+                        {/* Datos de la transacción */}
+                        <div className="mt-4 grid gap-2 text-sm text-gray-700">
+                            <div className="flex items-center gap-2">
+                                <CalendarClock className="h-4 w-4" />
+                                <span><strong>Transacción:</strong> {txnIdShown}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Info className="h-4 w-4" />
+                                <span><strong>Referencia cliente (clientTxId):</strong> {clientTxShown}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Info className="h-4 w-4" />
+                                <span><strong>Estado PayPhone:</strong> {statusShown}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Info className="h-4 w-4" />
+                                <span><strong>Monto:</strong> {amountShown === "—" ? "—" : `$${amountShown}`}</span>
+                            </div>
+                        </div>
+
                         {/* Citas confirmadas */}
                         <div className="mt-5">
                             <h3 className="font-semibold text-emerald-900">Citas confirmadas</h3>
                             {confirmedAppts.length === 0 ? (
                                 <p className="text-sm text-gray-500 mt-1">
-                                    No se confirmaron citas nuevas. Puede que ya estuvieran confirmadas o el pago no
-                                    se haya completado.
+                                    {result?.approved
+                                        ? "Pago aprobado. No se detectaron nuevas confirmaciones (o ya estaban confirmadas)."
+                                        : "No hay confirmaciones nuevas."}
                                 </p>
                             ) : (
                                 <ul className="mt-2 space-y-2">
@@ -202,10 +208,10 @@ export default function PaymentResult() {
                                 Ir a mis citas
                             </button>
                             <button
-                                onClick={confirmAppointments}
+                                onClick={doServerConfirm}
                                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border hover:bg-gray-50"
                             >
-                                Reintentar confirmación
+                                Reintentar verificación
                             </button>
                         </div>
                     </>
@@ -219,21 +225,17 @@ export default function PaymentResult() {
                     <span className="font-medium">DEBUG Return URL</span>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-y-1">
-                    <div><strong>transactionId:</strong> {txnIdStr || "—"}</div>
-                    <div><strong>optionalParameter3 (URL):</strong> {rawAppts || "—"}</div>
-                    <div>
-                        <strong>Citas detectadas:</strong>{" "}
-                        {appointmentIds.length ? appointmentIds.join(", ") : "—"}
-                    </div>
+                    <div><strong>id / transactionId:</strong> {txnIdStr || "—"}</div>
+                    <div><strong>clientTransactionId:</strong> {clientTx || "—"}</div>
                 </div>
             </div>
 
-            {/* Debug parse de horas */}
-            {debugInfo.length > 0 && (
+            {/* Debug técnico */}
+            {debugBlock && (
                 <details className="mt-2 text-xs text-gray-600">
-                    <summary className="cursor-pointer">Debug de horas (crudo vs mostrado)</summary>
+                    <summary className="cursor-pointer">Detalles técnicos (payload/resp)</summary>
                     <pre className="mt-2 p-3 bg-gray-50 rounded border overflow-auto">
-                        {JSON.stringify(debugInfo, null, 2)}
+                        {JSON.stringify(debugBlock, null, 2)}
                     </pre>
                 </details>
             )}
