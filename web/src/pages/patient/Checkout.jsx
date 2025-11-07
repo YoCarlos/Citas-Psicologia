@@ -160,6 +160,7 @@ export default function Checkout() {
                 currency: "USD",
                 storeId: PAYPHONE_STORE_ID,
                 reference: opts.reference || "Cita Psicología",
+                optionalParameter: "Este es un parametro extra",
                 // IMPORTANTE: no enviamos phoneNumber, email, timeZone, service, tip, defaultMethod, etc.
             }).render("pp-button")
 
