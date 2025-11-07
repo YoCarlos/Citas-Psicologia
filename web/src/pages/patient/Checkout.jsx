@@ -6,19 +6,18 @@ import { getUserFromToken } from "../../lib/auth"
 import { ArrowLeft, ArrowRight, CreditCard, Clock, Info } from "lucide-react"
 
 // === PayPhone Cajita v1.1 (OFICIAL) ===
-// Docs: https://www.docs.payphone.app/cajita-de-pagos-payphone
 const PAYPHONE_BOX_JS =
     import.meta.env.VITE_PAYPHONE_BOX_JS ||
     "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.js"
 const PAYPHONE_BOX_CSS =
     import.meta.env.VITE_PAYPHONE_BOX_CSS ||
     "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.css"
-const PAYPHONE_PUBLIC_TOKEN = import.meta.env.VITE_PAYPHONE_TOKEN || "" // requerido
-const PAYPHONE_STORE_ID = import.meta.env.VITE_PAYPHONE_STORE_ID || ""  // requerido
+const PAYPHONE_PUBLIC_TOKEN = import.meta.env.VITE_PAYPHONE_TOKEN || ""
+const PAYPHONE_STORE_ID = import.meta.env.VITE_PAYPHONE_STORE_ID || ""
 const TZ = "America/Guayaquil"
 const TIMEZONE_OFFSET = -5 // Ecuador (sin DST)
 
-// helpers de fecha (solo para mostrar)
+// --- helpers de hora y fecha ---
 const toLocalHM = (isoString) =>
     new Date(isoString).toLocaleTimeString("es-EC", {
         hour: "2-digit",
@@ -26,7 +25,6 @@ const toLocalHM = (isoString) =>
         hour12: false,
         timeZone: TZ,
     })
-
 const toLocalYMD = (isoString) => {
     const d = new Date(isoString)
     const y = d.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
@@ -34,7 +32,6 @@ const toLocalYMD = (isoString) => {
     const day = d.toLocaleString("en-CA", { day: "2-digit", timeZone: TZ })
     return `${y}-${m}-${day}`
 }
-
 function groupByDay(items) {
     const map = {}
     for (const it of items) {
@@ -79,14 +76,12 @@ export default function Checkout() {
 
     // === Cargar SDK ===
     React.useEffect(() => {
-        // CSS
         if (!document.querySelector(`link[href="${PAYPHONE_BOX_CSS}"]`)) {
             const link = document.createElement("link")
             link.rel = "stylesheet"
             link.href = PAYPHONE_BOX_CSS
             document.head.appendChild(link)
         }
-        // JS
         if (!document.querySelector(`script[src="${PAYPHONE_BOX_JS}"]`)) {
             const s = document.createElement("script")
             s.type = "module"
@@ -100,9 +95,7 @@ export default function Checkout() {
                     log("SDK cargado correctamente:", ok)
                 }, 100)
             }
-            s.onerror = () => {
-                setErrorMsg("No se pudo cargar el SDK de PayPhone.")
-            }
+            s.onerror = () => setErrorMsg("No se pudo cargar el SDK de PayPhone.")
             document.body.appendChild(s)
         } else {
             const ok =
@@ -125,25 +118,25 @@ export default function Checkout() {
             const container = document.getElementById("pp-button")
             if (!container) return false
             container.innerHTML = ""
-
             try {
                 new PPB({
                     token: PAYPHONE_PUBLIC_TOKEN,
                     amount: opts.amount,
-                    amountWithoutTax: opts.amount, // todo sin IVA (ajústalo si manejas IVA)
+                    amountWithoutTax: opts.amount,
                     amountWithTax: 0,
                     tax: 0,
                     service: 0,
                     tip: 0,
                     currency: "USD",
                     storeId: PAYPHONE_STORE_ID,
-                    reference: opts.reference || "Cita Psicología",
-                    clientTransactionId: opts.clientTransactionId, // ⬅️ EL MISMO QUE EL BACKEND
+                    reference: opts.reference,
+                    clientTransactionId: opts.clientTransactionId,
                     defaultMethod: "card",
                     timeZone: TIMEZONE_OFFSET,
-                    // Datos opcionales si los tienes:
                     phoneNumber: user?.phone || "",
                     email: user?.email || "",
+                    // ⬇️ aquí pasaremos los IDs de cita para recuperarlos en el return URL
+                    optionalParameter3: opts.appointmentIds.join(","),
                 }).render("pp-button")
 
                 log("Cajita renderizada con clientTx:", opts.clientTransactionId)
@@ -174,35 +167,32 @@ export default function Checkout() {
             log("POST /appointments/hold", payload)
             const res = await apiPost(`/appointments/hold`, payload)
 
-            // backend devuelve { client_tx_id, appointments: [...] }
-            if (!res?.client_tx_id) {
-                throw new Error("El servidor no devolvió client_tx_id")
+            if (!res?.appointments?.length) {
+                throw new Error("El servidor no devolvió citas.")
             }
 
             setLastHold(res)
-            const clientTx = res.client_tx_id
-            const holdCount = res?.appointments?.length ?? items.length
+            const appointmentIds = res.appointments.map((a) => a.id)
+            const holdCount = appointmentIds.length
             setOkMsg(
                 `Se bloquearon ${holdCount} horario(s) por ${holdMinutes} minutos. Procede al pago.`
             )
             setPayReady(true)
 
+            // Generamos un ID único local para la transacción
+            const clientTx = `tx-${Date.now()}-${Math.floor(Math.random() * 9999)}`
             const refText = `cita-${clientTx}`
 
-            // Esperar SDK si hizo falta
-            if (!sdkReady) {
-                await new Promise((r) => setTimeout(r, 300))
-            }
+            if (!sdkReady) await new Promise((r) => setTimeout(r, 300))
 
             const ok = renderPayphoneBox({
                 amount: amountCents,
                 reference: refText,
-                clientTransactionId: clientTx, // ⬅️ MUY IMPORTANTE
+                clientTransactionId: clientTx,
+                appointmentIds,
             })
 
-            if (!ok) {
-                setErrorMsg("No se pudo mostrar la cajita de pagos.")
-            }
+            if (!ok) setErrorMsg("No se pudo mostrar la cajita de pagos.")
         } catch (e) {
             console.error(e)
             setErrorMsg(e?.message || "No se pudo bloquear temporalmente los horarios.")
@@ -214,7 +204,6 @@ export default function Checkout() {
 
     return (
         <div className="space-y-6">
-            {/* Header */}
             <div className="flex items-start justify-between gap-3">
                 <div>
                     <h1 className="text-2xl font-bold text-emerald-800">Confirmar reserva</h1>
@@ -267,13 +256,11 @@ export default function Checkout() {
                 )}
             </section>
 
-            {/* Info */}
             <section className="rounded-2xl bg-white p-5 border border-blue-100 shadow-sm">
                 <h2 className="font-semibold text-blue-900">Pago con tarjeta</h2>
                 <p className="text-sm text-gray-600 mt-1">
-                    Primero bloqueamos tu horario <strong>por {holdMinutes} minutos</strong> y
-                    luego pagas con PayPhone. La Cajita se mostrará abajo. Si no aparece, revisa
-                    la consola y tus credenciales.
+                    Primero bloqueamos tu horario <strong>por {holdMinutes} minutos</strong> y luego
+                    pagas con PayPhone. La Cajita se mostrará abajo.
                 </p>
                 <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
                     <Clock className="h-4 w-4" />
@@ -281,7 +268,6 @@ export default function Checkout() {
                 </div>
             </section>
 
-            {/* Mensajes */}
             {errorMsg && (
                 <div className="rounded-lg border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
                     {errorMsg}
@@ -293,31 +279,23 @@ export default function Checkout() {
                 </div>
             )}
 
-            {/* Debug */}
             <div className="rounded-lg border px-3 py-2 text-xs text-gray-700 bg-gray-50">
                 <div className="flex items-center gap-2">
                     <Info className="h-3.5 w-3.5" />
                     <span className="font-medium">DEBUG PayPhone</span>
                 </div>
                 <div className="mt-1 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-y-1">
-                    <div>
-                        SDK listo: <strong>{sdkReady ? "sí" : "no"}</strong>
-                    </div>
-                    <div>
-                        Token: <strong>{PAYPHONE_PUBLIC_TOKEN ? "ok" : "faltante"}</strong>
-                    </div>
-                    <div>
-                        StoreId: <strong>{PAYPHONE_STORE_ID ? "ok" : "faltante"}</strong>
-                    </div>
-                    <div>
-                        Monto (¢): <strong>{amountCents}</strong>
-                    </div>
-                    <div>
-                        Dominio: <strong>{location.host}</strong>
-                    </div>
-                    {lastHold?.client_tx_id && (
+                    <div>SDK listo: <strong>{sdkReady ? "sí" : "no"}</strong></div>
+                    <div>Token: <strong>{PAYPHONE_PUBLIC_TOKEN ? "ok" : "faltante"}</strong></div>
+                    <div>StoreId: <strong>{PAYPHONE_STORE_ID ? "ok" : "faltante"}</strong></div>
+                    <div>Monto (¢): <strong>{amountCents}</strong></div>
+                    <div>Dominio: <strong>{location.host}</strong></div>
+                    {lastHold?.appointments && (
                         <div>
-                            clientTxId (hold): <strong>{lastHold.client_tx_id}</strong>
+                            IDs:{" "}
+                            <strong>
+                                {lastHold.appointments.map((a) => a.id).join(", ")}
+                            </strong>
                         </div>
                     )}
                 </div>
@@ -328,14 +306,11 @@ export default function Checkout() {
                 )}
             </div>
 
-            {/* Cajita */}
             <div
                 id="pp-button"
-                className={`${payReady ? "block" : "hidden"
-                    } rounded-xl bg-white border border-emerald-100 p-4`}
+                className={`${payReady ? "block" : "hidden"} rounded-xl bg-white border border-emerald-100 p-4`}
             />
 
-            {/* Acciones */}
             <div className="flex items-center justify-end gap-3">
                 <button
                     type="button"

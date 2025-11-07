@@ -1,6 +1,5 @@
 # app/routers/appointments.py
 from __future__ import annotations
-import secrets
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, select, and_
@@ -21,7 +20,8 @@ from ..utils.tz import to_utc, iso_utc_z
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
 # --- Constantes ---
-BLOCKING_STATES = ["pending", "confirmed"]  # 'processing' se maneja explícitamente más abajo
+# Estados que bloquean horario (además se revalida 'processing' donde aplique)
+BLOCKING_STATES = ["pending", "confirmed"]
 
 
 def delete_stale_holds(db: Session) -> int:
@@ -294,9 +294,15 @@ def hold_appointments(
     current=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """
+    Crea citas en estado PENDING (method=payphone) con hold_until, pero
+    **NO** genera ni guarda client_tx_id. El vínculo para confirmar luego
+    se hará por IDs de cita (en optionalParameter3 del pago).
+    """
     if current.role != models.UserRole.patient:
         raise HTTPException(403, detail="Solo pacientes pueden bloquear horarios")
 
+    # 🧹 Limpia holds vencidos antes de intentar crear nuevos
     delete_stale_holds(db)
 
     doc = db.get(models.User, payload.doctor_id)
@@ -309,6 +315,7 @@ def hold_appointments(
     requested_min = min(to_utc(s.start_at) for s in payload.slots)
     requested_max = max(to_utc(s.end_at) for s in payload.slots)
 
+    # Intersecciones existentes (citas activas)
     existing = list(
         db.scalars(
             select(models.Appointment).where(
@@ -321,6 +328,7 @@ def hold_appointments(
             )
         )
     )
+    # Bloqueos existentes
     blocks = list(
         db.scalars(
             select(models.CalendarBlock).where(
@@ -333,9 +341,6 @@ def hold_appointments(
         )
     )
 
-    # 🔐 Generar un client_tx_id único y CONSISTENTE con PayPhone
-    client_tx_id = f"hold-{int(datetime.now(timezone.utc).timestamp() * 1000)}-{secrets.token_hex(4)}"
-
     to_create: list[models.Appointment] = []
     for s in payload.slots:
         s_start = to_utc(s.start_at)
@@ -345,14 +350,17 @@ def hold_appointments(
         if s_start <= now:
             raise HTTPException(400, detail="No puedes elegir un horario en el pasado")
 
+        # Conflicto con citas previamente cargadas
         for ea in existing:
             if overlaps_utc(s_start, s_end, ea.start_at, ea.end_at):
                 raise HTTPException(409, detail="Uno o más horarios ya no están disponibles")
 
+        # Conflicto con bloqueos
         for bl in blocks:
             if overlaps_utc(s_start, s_end, bl.start_at, bl.end_at):
                 raise HTTPException(409, detail="Uno o más horarios están bloqueados por la doctora")
 
+        # Conflicto entre slots seleccionados (duplicados/solapados)
         for tmp in to_create:
             if overlaps_utc(s_start, s_end, tmp.start_at, tmp.end_at):
                 raise HTTPException(409, detail="Selección contiene horarios solapados/duplicados")
@@ -365,14 +373,17 @@ def hold_appointments(
             status=models.AppointmentStatus.pending,
             method=models.PaymentMethod.payphone,
             hold_until=hold_until,
-            client_tx_id=client_tx_id,  # ← vínculo clave con PayPhone
+            # ❌ Sin client_tx_id: el amarre se hará por IDs en optionalParameter3
         )
         to_create.append(appt)
 
+    # Inserta en DB
     for a in to_create:
         db.add(a)
 
+    # Verificación final exacta (carrera)
     for a in to_create:
+        # contra citas exactas
         clash = db.scalar(
             select(models.Appointment.id).where(
                 and_(
@@ -386,6 +397,7 @@ def hold_appointments(
         if clash:
             raise HTTPException(409, detail="Otro usuario tomó uno de los horarios durante el proceso")
 
+        # contra bloqueos en el mismo rango
         bl_clash = db.scalar(
             select(models.CalendarBlock.id).where(
                 and_(
@@ -402,11 +414,9 @@ def hold_appointments(
     for a in to_create:
         db.refresh(a)
 
-    # ✅ Devolvemos el mismo client_tx_id que deberá usar la cajita de PayPhone
-    return schemas.AppointmentHoldOut(
-        client_tx_id=client_tx_id,
-        appointments=to_create,
-    )
+    # ✅ Devolvemos SOLO las citas (sin client_tx_id)
+    # Asegúrate de que schemas.AppointmentHoldOut tenga este shape (o client_tx_id sea Optional)
+    return {"appointments": to_create}
 
 
 # --- Confirmación (post-pago) ---
@@ -426,6 +436,7 @@ async def confirm_appt(
     - DOCTOR dueña de la cita, o
     - PACIENTE dueño de la cita cuando la cita es pending/payphone.
     """
+    # 🧹 Limpia holds vencidos antes de confirmar
     delete_stale_holds(db)
 
     appt = db.get(models.Appointment, id)
@@ -456,15 +467,18 @@ async def confirm_appt(
         raise HTTPException(status_code=400, detail="Rango horario inválido")
 
     now_utc = datetime.now(timezone.utc)
+    # Si el hold expiró, revalida conflictos y limpia hold_until si aún sigue disponible
     if appt.status == models.AppointmentStatus.pending and appt.method == models.PaymentMethod.payphone:
         if appt.hold_until and now_utc > to_utc(appt.hold_until):
             if has_conflict_or_block(db, doctor_id=appt.doctor_id, start_utc=s, end_utc=e, exclude_appt_id=appt.id):
                 raise HTTPException(400, detail="El horario fue tomado o bloqueado; el paciente debe elegir otro.")
             appt.hold_until = None
 
+    # Validación final de conflicto/bloqueo
     if has_conflict_or_block(db, doctor_id=appt.doctor_id, start_utc=s, end_utc=e, exclude_appt_id=appt.id):
         raise HTTPException(409, detail="Ese horario ya está ocupado o bloqueado")
 
+    # Crear Zoom si hace falta
     if not appt.zoom_meeting_id or not appt.zoom_join_url:
         if not settings.ZOOM_DEFAULT_USER:
             raise HTTPException(500, detail="ZOOM_DEFAULT_USER no configurado")
@@ -488,6 +502,7 @@ async def confirm_appt(
     db.commit()
     db.refresh(appt)
 
+    # Notificar + recordatorio
     bg.add_task(send_confirmed_emails, appt, db)
     schedule_reminder_job(appt)
 
@@ -507,12 +522,14 @@ async def reschedule_appt(
     current = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # 🧹 Limpia holds vencidos antes de reagendar
     delete_stale_holds(db)
 
     appt = db.get(models.Appointment, id)
     if not appt:
         raise HTTPException(404, "No encontrado")
 
+    # Permisos: paciente dueño o doctor dueño
     if not (
         (current.role == models.UserRole.patient and appt.patient_id == current.id) or
         (current.role == models.UserRole.doctor and appt.doctor_id == current.id)
@@ -529,6 +546,7 @@ async def reschedule_appt(
     if new_e <= new_s:
         raise HTTPException(400, "Rango horario inválido")
 
+    # Conflictos con otras citas + BLOQUEOS
     if has_conflict_or_block(db, doctor_id=appt.doctor_id, start_utc=new_s, end_utc=new_e, exclude_appt_id=appt.id):
         raise HTTPException(409, "Ese horario ya está ocupado o bloqueado")
 
@@ -537,8 +555,10 @@ async def reschedule_appt(
     appt.end_at = new_e
     appt.hold_until = None
 
+    # Si estaba confirmada y hay reunión Zoom → actualizarla
     if appt.status == models.AppointmentStatus.confirmed and appt.zoom_meeting_id:
         try:
+            # Usamos UTC con 'Z'
             start_iso = iso_utc_z(new_s)
             duration = max(1, int((new_e - new_s).total_seconds() // 60))
 
@@ -550,6 +570,7 @@ async def reschedule_appt(
                     topic=f"Cita {appt.id} - Doctor {appt.doctor_id}",
                 )
             except RuntimeError as zerr:
+                # Si la reunión no existe → recreamos
                 msg = str(zerr).lower()
                 if "404" in msg or "3001" in msg or "meeting does not exist" in msg:
                     if not settings.ZOOM_DEFAULT_USER:
@@ -559,23 +580,28 @@ async def reschedule_appt(
                         topic=f"Cita {appt.id} - Doctor {appt.doctor_id}",
                         start_time_iso=start_iso,
                         duration_minutes=duration,
-                        timezone=None,
+                        timezone=None,  # usamos UTC → no pasamos timezone
                         waiting_room=True,
                         join_before_host=False,
                     )
                     appt.zoom_meeting_id = str(z.get("id"))
                     appt.zoom_join_url = z.get("join_url")
                 else:
+                    # Otro error: aborta
                     raise
+
         except Exception as ex:
             db.rollback()
             raise HTTPException(502, f"No se pudo actualizar la reunión en Zoom: {ex}")
 
+    # Persistimos
     db.commit()
     db.refresh(appt)
 
+    # Emails de reagendado
     bg.add_task(send_rescheduled_emails, appt, db, old_start, old_end)
 
+    # Reprogramar recordatorio si estaba confirmada
     if appt.status == models.AppointmentStatus.confirmed:
         cancel_reminder_job(appt.id)
         schedule_reminder_job(appt)
