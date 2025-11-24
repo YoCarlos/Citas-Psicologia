@@ -7,15 +7,29 @@ import { getUserFromToken } from "../../lib/auth"
 const TZ = "America/Guayaquil"
 
 // ---------- helpers de fecha/hora ----------
+
+// ¿La cadena ya trae zona (Z o ±HH:MM)?
+const hasTZ = (s) => /Z$|[+\-]\d{2}:\d{2}$/.test(String(s || ""))
+
+// si llega sin timezone (ej. "2025-09-25T10:00:00") lo tratamos como UTC
+const ensureUTCString = (s) =>
+    typeof s === "string" && hasTZ(s) ? s : `${s}Z`
+
+// parseo consistente: siempre interpretamos como instante UTC
+const parseAsUTC = (s) => new Date(ensureUTCString(s))
+
+// Formatear fecha (YYYY-MM-DD) en zona América/Guayaquil
 const toLocalYMD = (iso) => {
-    const d = new Date(iso)
+    const d = parseAsUTC(iso)
     const y = d.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
     const m = d.toLocaleString("en-CA", { month: "2-digit", timeZone: TZ })
     const day = d.toLocaleString("en-CA", { day: "2-digit", timeZone: TZ })
     return `${y}-${m}-${day}`
 }
+
+// Formatear hora (HH:mm) en zona América/Guayaquil
 const toLocalHM = (iso) =>
-    new Date(iso).toLocaleTimeString("es-EC", {
+    parseAsUTC(iso).toLocaleTimeString("es-EC", {
         hour: "2-digit",
         minute: "2-digit",
         hour12: false,
@@ -23,10 +37,6 @@ const toLocalHM = (iso) =>
     })
 
 const todayYMD = () => toLocalYMD(new Date().toISOString())
-
-// si llega sin timezone (ej. "2025-09-25T10:00:00") lo tratamos como UTC
-const ensureUTCString = (s) => (typeof s === "string" && (s.endsWith("Z") || s.includes("+"))) ? s : `${s}Z`
-const parseAsUTC = (s) => new Date(ensureUTCString(s))
 
 // agrupa por día local
 const groupByDay = (items) => {

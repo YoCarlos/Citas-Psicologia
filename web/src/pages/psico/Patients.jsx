@@ -7,16 +7,30 @@ import { getUserFromToken } from "../../lib/auth"
 
 const TZ = "America/Guayaquil"
 
-// -------- helpers de fecha/hora --------
+// -------- helpers de fecha/hora (UTC → América/Guayaquil) --------
+
+// ¿La cadena ya trae zona (Z o ±HH:MM)?
+const hasTZ = (s) => /Z$|[+\-]\d{2}:\d{2}$/.test(String(s || ""))
+
+// Si llega sin timezone (ej. "2025-09-25T10:00:00") lo tratamos como UTC
+const ensureUTCString = (s) =>
+    typeof s === "string" && hasTZ(s) ? s : `${s}Z`
+
+// Parseo consistente: siempre interpretamos como instante UTC
+const parseAsUTC = (s) => new Date(ensureUTCString(s))
+
+// Fecha local YYYY-MM-DD en América/Guayaquil
 const toLocalYMD = (iso) => {
-    const d = new Date(iso)
+    const d = parseAsUTC(iso)
     const y = d.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
     const m = d.toLocaleString("en-CA", { month: "2-digit", timeZone: TZ })
     const day = d.toLocaleString("en-CA", { day: "2-digit", timeZone: TZ })
     return `${y}-${m}-${day}`
 }
+
+// Hora local HH:mm en América/Guayaquil
 const toLocalHM = (iso) =>
-    new Date(iso).toLocaleTimeString("es-EC", {
+    parseAsUTC(iso).toLocaleTimeString("es-EC", {
         hour: "2-digit",
         minute: "2-digit",
         hour12: false,
@@ -139,7 +153,8 @@ export default function Patients() {
             }).toString()
             const list = await apiGet(`/appointments?${qp}`)
             const arr = Array.isArray(list) ? list : []
-            arr.sort((a, b) => new Date(a.start_at) - new Date(b.start_at))
+            // Ordenar por inicio real, interpretando naive como UTC
+            arr.sort((a, b) => parseAsUTC(a.start_at) - parseAsUTC(b.start_at))
             setAppts(arr)
         } catch (e) {
             setApptsErr(e?.message || "No se pudieron cargar las citas del paciente.")
@@ -157,7 +172,7 @@ export default function Patients() {
             map[ymd].push(a)
         }
         for (const k of Object.keys(map)) {
-            map[k].sort((a, b) => new Date(a.start_at) - new Date(b.start_at))
+            map[k].sort((a, b) => parseAsUTC(a.start_at) - parseAsUTC(b.start_at))
         }
         return map
     }, [appts])

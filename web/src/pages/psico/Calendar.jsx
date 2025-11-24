@@ -17,12 +17,29 @@ dayjs.locale("es")
 const TZ = "America/Guayaquil"
 dayjs.tz.setDefault(TZ)
 
-// ---------- helpers (todo en Ecuador) ----------
-const dGYE = (iso) => (iso ? dayjs(iso).tz(TZ) : null)           // ISO UTC -> Ecuador
+// ---------- helpers (todo en Ecuador, tratando naive como UTC) ----------
+
+// ¿La cadena ya trae zona (Z o ±HH:MM)?
+const hasTZ = (s) => /Z$|[+\-]\d{2}:\d{2}$/.test(String(s || ""))
+
+// Normaliza: si llega sin TZ, se asume UTC y se agrega "Z"
+const parseAnyUtc = (iso) => {
+    if (!iso) return null
+    const s = String(iso)
+    const normalized = hasTZ(s) ? s : `${s}Z`
+    return dayjs.utc(normalized)
+}
+
+// ISO (naive o con Z) -> fecha/hora en América/Guayaquil
+const dGYE = (iso) => {
+    const d = parseAnyUtc(iso)
+    return d ? d.tz(TZ) : null
+}
+
 const fmtYMD = (iso) => dGYE(iso).format("YYYY-MM-DD")
 const fmtHM = (iso) => dGYE(iso).format("HH:mm")
 
-const monthKeyOf = (iso) => dGYE(iso).format("YYYY-MM")          // p.ej. 2025-09
+const monthKeyOf = (iso) => dGYE(iso).format("YYYY-MM") // p.ej. 2025-09
 const monthLabel = (key) => dayjs.tz(`${key}-01`, TZ).format("MMMM YYYY")
 
 const statusBadge = (st) =>
@@ -52,9 +69,19 @@ export default function Calendar() {
                 const list = await apiGet(`/appointments?${qs}`)
                 const all = Array.isArray(list) ? list : []
 
-                const now = dayjs() // ahora (no hace falta TZ para comparar con ISO Z)
-                const future = all.filter((a) => dayjs(a.end_at).isAfter(now))
-                future.sort((a, b) => dayjs(a.start_at).valueOf() - dayjs(b.start_at).valueOf())
+                // Ahora en UTC para comparar contra los ISO UTC/naive normalizados
+                const now = dayjs().utc()
+                const future = all.filter((a) => {
+                    const end = parseAnyUtc(a.end_at)
+                    return end ? end.isAfter(now) : false
+                })
+
+                future.sort((a, b) => {
+                    const da = parseAnyUtc(a.start_at)
+                    const db = parseAnyUtc(b.start_at)
+                    return (da ? da.valueOf() : 0) - (db ? db.valueOf() : 0)
+                })
+
                 setAppts(future)
             } catch (e) {
                 setErrorMsg(e?.message || "No se pudo cargar el calendario.")
@@ -111,17 +138,21 @@ export default function Calendar() {
     const groupedByMonth = React.useMemo(() => {
         const byMonth = {}
         for (const a of appts) {
-            const mk = monthKeyOf(a.start_at)      // YYYY-MM en GYE
-            const ymd = fmtYMD(a.start_at)         // YYYY-MM-DD en GYE
+            const mk = monthKeyOf(a.start_at) // YYYY-MM en GYE
+            const ymd = fmtYMD(a.start_at)    // YYYY-MM-DD en GYE
             byMonth[mk] ??= {}
             byMonth[mk][ymd] ??= []
             byMonth[mk][ymd].push(a)
         }
-        // ordenar interno por hora asc
+        // ordenar interno por hora asc usando parseAnyUtc
         for (const mk of Object.keys(byMonth)) {
             const days = byMonth[mk]
             for (const d of Object.keys(days)) {
-                days[d].sort((x, y) => dayjs(x.start_at).valueOf() - dayjs(y.start_at).valueOf())
+                days[d].sort((x, y) => {
+                    const dx = parseAnyUtc(x.start_at)
+                    const dy = parseAnyUtc(y.start_at)
+                    return (dx ? dx.valueOf() : 0) - (dy ? dy.valueOf() : 0)
+                })
             }
         }
         return byMonth
