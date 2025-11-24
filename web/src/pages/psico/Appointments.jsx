@@ -14,16 +14,42 @@ dayjs.extend(timezone)
 const TZ = "America/Guayaquil"
 dayjs.tz.setDefault(TZ)
 
-// === TZ helpers (todo en Ecuador, input ISO UTC del backend) ===
-const dGYE = (iso) => (iso ? dayjs(iso).tz(TZ) : null)               // parse ISO (UTC/Z) -> Ecuador
-const fmtYMD = (iso) => dGYE(iso).format("YYYY-MM-DD")
-const fmtHM = (iso) => dGYE(iso).format("HH:mm")
+// ============ Helpers de zona horaria (mismo criterio que PatientAppointments) ============
+
+// ¿La cadena ya trae Z o un offset +/-HH:MM?
+const hasTZ = (s) => /Z$|[+\-]\d{2}:\d{2}$/.test(String(s || ""))
+
+/**
+ * Igual idea que parseAny:
+ * - Si trae Z/offset => se respeta
+ * - Si NO trae zona  => se asume UTC y se le agrega 'Z'
+ */
+const parseAnyUtc = (iso) => {
+    if (!iso) return null
+    const s = String(iso)
+    const normalized = hasTZ(s) ? s : `${s}Z`
+    return dayjs.utc(normalized) // siempre desde UTC
+}
+
+// ISO (naive o con Z) → DateTime en América/Guayaquil
+const dGYE = (iso) => {
+    const d = parseAnyUtc(iso)
+    return d ? d.tz(TZ) : null
+}
+
+// Formatos amigables (si iso es null/undefined devuelve cadena vacía)
+const fmtYMD = (iso) => dGYE(iso)?.format("YYYY-MM-DD") ?? ""
+const fmtHM = (iso) => dGYE(iso)?.format("HH:mm") ?? ""
+
+// "Ahora" en América/Guayaquil
 const nowGYE = () => dayjs().tz(TZ)
 
+// Habilitar “Unirse” 5 minutos antes, todo en GYE
 const canJoinNow = (startISO, endISO) => {
     const now = nowGYE()
     const start = dGYE(startISO)
     const end = dGYE(endISO)
+    if (!start || !end) return false
     return now.isAfter(start.subtract(5, "minute")) && now.isBefore(end)
 }
 
@@ -79,7 +105,7 @@ export default function Appointments() {
             const now = nowGYE()
             const mapped = (res || []).map((a) => {
                 const end = dGYE(a.end_at)
-                const isPast = end.isBefore(now)
+                const isPast = end ? end.isBefore(now) : false
                 return {
                     ...a,
                     ymd: fmtYMD(a.start_at),
@@ -88,7 +114,14 @@ export default function Appointments() {
                     canJoin: a.status === "confirmed" && !!a.zoom_join_url && canJoinNow(a.start_at, a.end_at),
                 }
             })
-            mapped.sort((x, y) => dayjs(x.start_at).valueOf() - dayjs(y.start_at).valueOf())
+
+            // Ordenar por inicio real usando el mismo criterio de parseo (naive => UTC)
+            mapped.sort((x, y) => {
+                const dx = parseAnyUtc(x.start_at)
+                const dy = parseAnyUtc(y.start_at)
+                return (dx ? dx.valueOf() : 0) - (dy ? dy.valueOf() : 0)
+            })
+
             setItems(mapped)
         } catch (e) {
             setErrorMsg(e?.message || "No se pudieron cargar las citas.")
@@ -166,6 +199,7 @@ export default function Appointments() {
 
         return items.filter((a) => {
             const start = dGYE(a.start_at)
+            if (!start) return false
             return start.isSame(from) || (start.isAfter(from) && start.isBefore(to)) || start.isSame(to)
         })
     }, [items, range])
@@ -184,9 +218,14 @@ export default function Appointments() {
             map[a.ymd].push(a)
         }
         for (const k of Object.keys(map)) {
-            map[k].sort((x, y) => dayjs(x.start_at).valueOf() - dayjs(y.start_at).valueOf())
+            // ordenar dentro del día usando el mismo parseo UTC-safe
+            map[k].sort((x, y) => {
+                const dx = parseAnyUtc(x.start_at)
+                const dy = parseAnyUtc(y.start_at)
+                return (dx ? dx.valueOf() : 0) - (dy ? dy.valueOf() : 0)
+            })
         }
-        // ordenar días por fecha
+        // ordenar días por fecha (YYYY-MM-DD ya está en GYE)
         return Object.entries(map).sort(([a], [b]) => dayjs(a).valueOf() - dayjs(b).valueOf())
     }, [visible])
 
@@ -206,7 +245,7 @@ export default function Appointments() {
         setModalOpen(true)
         const now = nowGYE()
         const start = dGYE(appt.start_at)
-        const locked = start.diff(now, "hour", true) < 4
+        const locked = start && start.diff(now, "hour", true) < 4
         if (!locked) {
             setTimeout(() => fetchSlotsForDay(fmtYMD(appt.start_at)), 0)
         }
@@ -227,7 +266,13 @@ export default function Appointments() {
                 date_to: toISO,
             }).toString()
             const res = await apiGet(`/availability/slots?${qs}`)
-            const sorted = (res || []).sort((a, b) => dayjs(a.start_at).valueOf() - dayjs(b.start_at).valueOf())
+
+            const sorted = (res || []).sort((a, b) => {
+                const da = parseAnyUtc(a.start_at)
+                const db = parseAnyUtc(b.start_at)
+                return (da ? da.valueOf() : 0) - (db ? db.valueOf() : 0)
+            })
+
             setSlots(sorted)
             if (sorted.length === 0) setModalMsg("No hay horarios disponibles para esta fecha.")
         } catch (e) {
@@ -245,7 +290,7 @@ export default function Appointments() {
         if (!currentAppt) return
         const now = nowGYE()
         const start = dGYE(currentAppt.start_at)
-        const locked = start.diff(now, "hour", true) < 4
+        const locked = start && start.diff(now, "hour", true) < 4
         if (!locked && ymd) fetchSlotsForDay(ymd)
     }
 
@@ -254,7 +299,7 @@ export default function Appointments() {
         setModalMsg("")
         const now = nowGYE()
         const start = dGYE(currentAppt.start_at)
-        const locked = start.diff(now, "hour", true) < 4
+        const locked = start && start.diff(now, "hour", true) < 4
         if (locked) {
             setModalMsg("No es posible reagendar: faltan menos de 4 horas para el inicio de la cita.")
             return
@@ -428,7 +473,7 @@ export default function Appointments() {
                             {currentAppt && (() => {
                                 const now = nowGYE()
                                 const start = dGYE(currentAppt.start_at)
-                                const locked = start.diff(now, "hour", true) < 4
+                                const locked = start && start.diff(now, "hour", true) < 4
 
                                 if (locked) {
                                     return (
