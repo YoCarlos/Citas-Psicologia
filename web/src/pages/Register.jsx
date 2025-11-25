@@ -44,7 +44,7 @@ export default function Register() {
                 full_name: `${form.firstName.trim()} ${form.lastName.trim()}`.trim(),
                 role: "patient",
                 region: form.region,
-                doctor_id: 2,
+                doctor_id: 3,
             }
 
             await apiPost("/auth/register", payload)
