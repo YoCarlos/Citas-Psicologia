@@ -38,15 +38,23 @@ export default function Landing() {
                         </Link>
                     </nav>
 
-                    {/* acción principal en móvil */}
-                    <div className="md:hidden">
+                    {/* acciones principales en móvil */}
+                    <div className="md:hidden flex items-center gap-3">
                         <Link
                             to="/login"
                             className="px-3 py-2 rounded-xl bg-white text-emerald-700 font-semibold shadow-sm"
                         >
                             Entrar
                         </Link>
+
+                        <Link
+                            to="/register"
+                            className="px-3 py-2 rounded-xl bg-blue-700 text-white font-semibold shadow-sm"
+                        >
+                            Registro
+                        </Link>
                     </div>
+
                 </div>
             </header>
 
@@ -67,8 +75,16 @@ export default function Landing() {
                                 to="/login"
                                 className="px-5 py-3 rounded-2xl bg-white text-emerald-700 font-semibold hover:opacity-90 shadow"
                             >
-                                Entrar / Registrarme
+                                Entrar
                             </Link>
+
+                            <Link
+                                to="/register"
+                                className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold hover:opacity-90 shadow"
+                            >
+                                Registrarme
+                            </Link>
+
                             <a
                                 href="#servicios"
                                 className="px-5 py-3 rounded-2xl border border-white/50 text-white font-semibold hover:bg-white/10"
@@ -76,6 +92,7 @@ export default function Landing() {
                                 Ver servicios
                             </a>
                         </div>
+
 
                         <div className="mt-6 flex flex-wrap items-center gap-3 text-xs text-emerald-50/85">
                             <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 border border-white/20">
