@@ -39,7 +39,7 @@ function PsicoSidebar() {
                     <Brain className="h-6 w-6" />
                 </div>
                 <div>
-                    <div className="font-bold text-emerald-700 text-lg">CitasPsico</div>
+                    <div className="font-bold text-emerald-700 text-lg">Patricia Chérrez</div>
                     <div className="text-xs text-gray-500">Panel de la psicóloga</div>
                 </div>
             </div>
@@ -121,7 +121,7 @@ function PsicoSidebar() {
 
             {/* Pie del sidebar */}
             <div className="p-3 border-t text-xs text-gray-400 text-center">
-                © {new Date().getFullYear()} CitasPsico
+                © {new Date().getFullYear()} Patricia Chérrez
             </div>
         </div>
     )

@@ -11,7 +11,7 @@ export default function Landing() {
                             <span className="font-extrabold text-xl">Ψ</span>
                         </div>
                         <div className="leading-tight">
-                            <h1 className="font-bold text-lg tracking-tight">CitasPsico</h1>
+                            <h1 className="font-bold text-lg tracking-tight">Patricia Chérrez</h1>
                             <p className="text-xs text-white/85">Cuidado emocional en línea</p>
                         </div>
                     </div>
@@ -282,7 +282,7 @@ export default function Landing() {
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
                         <div className="space-y-1">
                             <p className="text-white/85 text-sm">
-                                © {new Date().getFullYear()} CitasPsico — Todos los derechos reservados
+                                © {new Date().getFullYear()} Patricia Chérrez — Todos los derechos reservados
                             </p>
                             <p className="text-white/70 text-xs">
                                 Plataforma para agendar consultas psicológicas en línea. No sustituye atención de emergencia.

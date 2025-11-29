@@ -193,7 +193,7 @@ export default function PatientLayout() {
                 </main>
             </div>
 
-            <SideDrawer open={open} onClose={() => setOpen(false)} width={240} title="CitasPsico">
+            <SideDrawer open={open} onClose={() => setOpen(false)} width={240} title="Patricia Chérrez">
                 <PatientSidebar profileComplete={profileComplete} />
             </SideDrawer>
         </div>

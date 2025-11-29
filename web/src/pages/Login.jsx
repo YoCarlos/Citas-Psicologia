@@ -62,7 +62,7 @@ export default function Login() {
                         </div>
                         <div className="leading-tight text-center">
                             <p className="text-xs font-semibold text-emerald-700/80 uppercase tracking-[0.18em]">
-                                CitasPsico
+                                Patricia Chérrez
                             </p>
                             <h1 className="text-xl md:text-2xl font-semibold text-emerald-900">
                                 Iniciar sesión

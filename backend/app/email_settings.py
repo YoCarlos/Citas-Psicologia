@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 class EmailSettings(BaseSettings):
-    MAIL_FROM_NAME: str = "CitasPsico"
+    MAIL_FROM_NAME: str = "Patricia Chérrez"
     MAIL_FROM: str = "no-reply@psicologacherrez.com"
 
     MAIL_SERVER: str = "localhost"
