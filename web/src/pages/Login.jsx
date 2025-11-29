@@ -51,49 +51,43 @@ export default function Login() {
     }
 
     return (
-        <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center px-4 py-8 relative overflow-hidden">
-            {/* fondo decorativo */}
-            <div className="pointer-events-none absolute inset-0 opacity-60">
-                <div className="absolute -top-32 -right-24 h-72 w-72 rounded-full bg-emerald-500/20 blur-3xl" />
-                <div className="absolute -bottom-32 -left-24 h-72 w-72 rounded-full bg-blue-500/20 blur-3xl" />
-            </div>
-
-            <div className="relative w-full max-w-md">
-                {/* Tarjeta principal */}
-                <div className="rounded-3xl border border-white/10 bg-slate-950/80 backdrop-blur-xl shadow-2xl px-6 py-7">
-                    {/* encabezado con icono */}
-                    <div className="flex flex-col items-center gap-3">
-                        <div className="h-12 w-12 rounded-2xl bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center shadow-inner">
-                            <span className="text-2xl font-black text-emerald-300">Ψ</span>
+        <div className="min-h-screen bg-gradient-to-br from-emerald-700 via-emerald-600 to-emerald-700 flex items-center justify-center px-4 py-8">
+            <div className="w-full max-w-md">
+                {/* tarjeta principal */}
+                <div className="bg-white/95 rounded-3xl shadow-xl border border-emerald-100 px-6 py-7">
+                    {/* encabezado tipo landing */}
+                    <div className="flex items-center gap-3 justify-center">
+                        <div className="h-10 w-10 rounded-2xl bg-emerald-600/10 flex items-center justify-center shadow-sm">
+                            <span className="font-extrabold text-xl text-emerald-700">Ψ</span>
                         </div>
-                        <div className="text-center">
-                            <h1 className="text-2xl font-semibold tracking-tight">
+                        <div className="leading-tight text-center">
+                            <p className="text-xs font-semibold text-emerald-700/80 uppercase tracking-[0.18em]">
+                                CitasPsico
+                            </p>
+                            <h1 className="text-xl md:text-2xl font-semibold text-emerald-900">
                                 Iniciar sesión
                             </h1>
-                            <p className="mt-1 text-xs font-medium uppercase tracking-[0.18em] text-emerald-300/80">
-                                Portal de CitasPsico
-                            </p>
-                            <p className="mt-2 text-sm text-slate-300">
-                                Ingresa con tu cuenta para gestionar tus citas en línea.
-                            </p>
                         </div>
                     </div>
 
+                    <p className="mt-3 text-sm text-center text-emerald-900/70">
+                        Accede a tu panel para gestionar tus citas en línea.
+                    </p>
+
                     {errorMsg && (
-                        <div className="mt-5 rounded-2xl border border-rose-500/40 bg-rose-500/10 text-rose-100 px-4 py-3 text-sm flex gap-2">
-                            <span className="mt-0.5 text-lg">!</span>
-                            <span>{errorMsg}</span>
+                        <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 text-rose-700 px-4 py-3 text-sm">
+                            {errorMsg}
                         </div>
                     )}
 
                     <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
-                        <div className="space-y-1.5">
-                            <label className="block text-sm font-medium text-slate-100">
+                        <div>
+                            <label className="block text-sm font-medium text-emerald-900">
                                 Email
                             </label>
                             <input
                                 type="email"
-                                className="mt-0.5 block w-full rounded-2xl border border-slate-600/70 bg-slate-900/70 px-3 py-2.5 text-sm text-white placeholder:text-slate-400 shadow-inner outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/60"
+                                className="mt-1 w-full rounded-2xl border border-emerald-100 bg-emerald-50/40 px-3 py-2.5 text-sm text-emerald-900 placeholder:text-emerald-400 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-300"
                                 placeholder="tu@correo.com"
                                 autoComplete="email"
                                 value={email}
@@ -101,16 +95,13 @@ export default function Login() {
                             />
                         </div>
 
-                        <div className="space-y-1.5">
-                            <div className="flex items-center justify-between">
-                                <label className="block text-sm font-medium text-slate-100">
-                                    Contraseña
-                                </label>
-                                {/* Si luego quieres, aquí va "¿Olvidaste tu contraseña?" */}
-                            </div>
+                        <div>
+                            <label className="block text-sm font-medium text-emerald-900">
+                                Contraseña
+                            </label>
                             <input
                                 type="password"
-                                className="mt-0.5 block w-full rounded-2xl border border-slate-600/70 bg-slate-900/70 px-3 py-2.5 text-sm text-white placeholder:text-slate-400 shadow-inner outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/60"
+                                className="mt-1 w-full rounded-2xl border border-emerald-100 bg-emerald-50/40 px-3 py-2.5 text-sm text-emerald-900 placeholder:text-emerald-400 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-300"
                                 placeholder="••••••••"
                                 autoComplete="current-password"
                                 value={password}
@@ -121,48 +112,35 @@ export default function Login() {
                         <button
                             type="submit"
                             disabled={!canSubmit}
-                            className={`mt-2 w-full inline-flex items-center justify-center gap-2 rounded-2xl py-2.5 text-sm font-semibold transition 
+                            className={`w-full mt-2 py-2.5 rounded-2xl font-semibold text-sm transition flex items-center justify-center
                                 ${canSubmit
-                                    ? "bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-500/30"
-                                    : "bg-slate-700/60 text-slate-300 cursor-not-allowed"
+                                    ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-500/30"
+                                    : "bg-emerald-200 text-emerald-500 cursor-not-allowed"
                                 }`}
                         >
-                            {loading ? (
-                                <>
-                                    <span className="h-4 w-4 rounded-full border-2 border-slate-950/40 border-t-transparent animate-spin" />
-                                    Entrando...
-                                </>
-                            ) : (
-                                "Entrar"
-                            )}
+                            {loading ? "Entrando..." : "Entrar"}
                         </button>
                     </form>
 
-                    {/* separador + link a registro */}
-                    <div className="mt-6">
-                        <div className="flex items-center gap-3 text-xs text-slate-400">
-                            <div className="h-px flex-1 bg-slate-600/60" />
-                            <span>¿Aún no tienes cuenta?</span>
-                            <div className="h-px flex-1 bg-slate-600/60" />
+                    {/* link a registro, estilo píldora como en el landing */}
+                    <div className="mt-6 flex flex-col items-center gap-3">
+                        <div className="text-xs text-emerald-800/80">
+                            ¿Aún no tienes cuenta?
                         </div>
-
-                        <div className="mt-3 flex justify-center">
-                            <Link
-                                to="/register"
-                                className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-400/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 hover:bg-emerald-500/20 hover:border-emerald-300 transition"
-                            >
-                                Crear cuenta
-                            </Link>
-                        </div>
+                        <Link
+                            to="/register"
+                            className="inline-flex items-center justify-center px-5 py-2.5 rounded-2xl bg-blue-700 text-white text-sm font-semibold hover:bg-blue-600 shadow"
+                        >
+                            Registrarme
+                        </Link>
                     </div>
 
-                    <div className="mt-6 text-center text-xs text-slate-400">
+                    <div className="mt-6 text-center">
                         <Link
                             to="/"
-                            className="inline-flex items-center gap-1 hover:text-emerald-300 transition"
+                            className="text-xs text-emerald-700 hover:text-emerald-900 hover:underline"
                         >
-                            <span>←</span>
-                            <span>Volver a la página principal</span>
+                            ← Volver al inicio
                         </Link>
                     </div>
                 </div>
