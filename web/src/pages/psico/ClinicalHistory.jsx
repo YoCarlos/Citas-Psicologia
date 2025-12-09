@@ -196,9 +196,6 @@ export default function ClinicalHistory() {
                 <div>
                     <h1 className="text-2xl font-bold text-emerald-800">{titleName}</h1>
                     <p className="text-gray-600 text-sm">Historia clínica</p>
-                    <p className="text-xs text-red-500">
-                        DEBUG: versión con motivo de consulta
-                    </p>
 
                 </div>
 
