@@ -128,15 +128,27 @@ class ClinicalHistory(Base):
     medicacion_actual: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     alergias: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     diagnosticos_previos: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # 👇 NUEVOS CAMPOS
+    motivo_consulta: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    funciones_psiquicas: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sintomatologia: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    habitos: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     consumo: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     antecedentes_psico: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     notas: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     factores_protectores: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     patient = relationship("User", backref="clinical_histories")
+
 
 
 # =========================

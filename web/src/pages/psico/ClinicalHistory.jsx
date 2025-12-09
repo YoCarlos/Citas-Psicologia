@@ -33,20 +33,28 @@ export default function ClinicalHistory() {
         medicacionActual: "",
         alergias: "",
         diagnosticosPrevios: "",
+        motivoConsulta: "",
+        funcionesPsiquicas: "",
+        sintomatologia: "",
+        habitos: "",
         consumo: "",
         antecedentesPsico: "",
-        factoresProtectores: "",     // ✅ nuevo campo en el form
+        factoresProtectores: "",
         notas: "",
     }
 
     const [form, setForm] = React.useState(emptyForm)
     const [initialForm, setInitialForm] = React.useState(emptyForm)
 
-    const onChange = (e) => setForm({ ...form, [e.target.name]: e.target.value })
+    const onChange = (e) =>
+        setForm({ ...form, [e.target.name]: e.target.value })
 
     // Detectar si hay cambios
     const isDirty = React.useMemo(
-        () => Object.keys(form).some((k) => (form[k] || "") !== (initialForm[k] || "")),
+        () =>
+            Object.keys(form).some(
+                (k) => (form[k] || "") !== (initialForm[k] || "")
+            ),
         [form, initialForm]
     )
 
@@ -64,7 +72,9 @@ export default function ClinicalHistory() {
                 setPatient(p)
 
                 // 2) Historia clínica (por patient_id, tomamos la primera si existe)
-                const list = await apiGet(`/clinical_histories?patient_id=${id}&skip=0&limit=1`)
+                const list = await apiGet(
+                    `/clinical_histories?patient_id=${id}&skip=0&limit=1`
+                )
                 if (!alive) return
 
                 const exists = Array.isArray(list) && list.length > 0 ? list[0] : null
@@ -77,9 +87,13 @@ export default function ClinicalHistory() {
                         medicacionActual: exists.medicacion_actual ?? "",
                         alergias: exists.alergias ?? "",
                         diagnosticosPrevios: exists.diagnosticos_previos ?? "",
+                        motivoConsulta: exists.motivo_consulta ?? "",
+                        funcionesPsiquicas: exists.funciones_psiquicas ?? "",
+                        sintomatologia: exists.sintomatologia ?? "",
+                        habitos: exists.habitos ?? "",
                         consumo: exists.consumo ?? "",
                         antecedentesPsico: exists.antecedentes_psico ?? "",
-                        factoresProtectores: exists.factores_protectores ?? "", // ✅ cargar del backend
+                        factoresProtectores: exists.factores_protectores ?? "",
                         notas: exists.notas ?? "",
                     }
                     setForm(filled)
@@ -130,9 +144,13 @@ export default function ClinicalHistory() {
             medicacion_actual: form.medicacionActual || null,
             alergias: form.alergias || null,
             diagnosticos_previos: form.diagnosticosPrevios || null,
+            motivo_consulta: form.motivoConsulta || null,
+            funciones_psiquicas: form.funcionesPsiquicas || null,
+            sintomatologia: form.sintomatologia || null,
+            habitos: form.habitos || null,
             consumo: form.consumo || null,
             antecedentes_psico: form.antecedentesPsico || null,
-            factores_protectores: form.factoresProtectores || null, // ✅ enviar al backend
+            factores_protectores: form.factoresProtectores || null,
             notas: form.notas || null,
         }
 
@@ -152,9 +170,13 @@ export default function ClinicalHistory() {
                 medicacionActual: saved.medicacion_actual ?? "",
                 alergias: saved.alergias ?? "",
                 diagnosticosPrevios: saved.diagnosticos_previos ?? "",
+                motivoConsulta: saved.motivo_consulta ?? "",
+                funcionesPsiquicas: saved.funciones_psiquicas ?? "",
+                sintomatologia: saved.sintomatologia ?? "",
+                habitos: saved.habitos ?? "",
                 consumo: saved.consumo ?? "",
                 antecedentesPsico: saved.antecedentes_psico ?? "",
-                factoresProtectores: saved.factores_protectores ?? "", // ✅ refrescar del backend
+                factoresProtectores: saved.factores_protectores ?? "",
                 notas: saved.notas ?? "",
             }
             setForm(canonical)
@@ -179,7 +201,8 @@ export default function ClinicalHistory() {
                 <div className="flex items-center gap-2">
                     {history?.updated_at && (
                         <div className="text-xs text-gray-500 mr-2">
-                            Última actualización: {new Date(history.updated_at).toLocaleString()}
+                            Última actualización:{" "}
+                            {new Date(history.updated_at).toLocaleString()}
                         </div>
                     )}
                     {!loading && (
@@ -230,9 +253,13 @@ export default function ClinicalHistory() {
                         ["medicacionActual", "Medicación actual"],
                         ["alergias", "Alergias"],
                         ["diagnosticosPrevios", "Diagnósticos previos"],
+                        ["motivoConsulta", "Motivo de consulta"],
+                        ["funcionesPsiquicas", "Funciones psíquicas"],
+                        ["sintomatologia", "Sintomatología"],
+                        ["habitos", "Hábitos"],
                         ["consumo", "Consumo (tabaco, alcohol, otras)"],
                         ["antecedentesPsico", "Antecedentes psicológicos/psiquiátricos"],
-                        ["factoresProtectores", "Factores protectores"], // ✅ nuevo textarea visible
+                        ["factoresProtectores", "Factores protectores"],
                         ["notas", "Notas adicionales"],
                     ].map(([name, label]) => (
                         <div key={name}>

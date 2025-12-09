@@ -73,15 +73,24 @@ class ClinicalHistoryBase(BaseModel):
     medicacion_actual: Optional[str] = None
     alergias: Optional[str] = None
     diagnosticos_previos: Optional[str] = None
+    motivo_consulta: Optional[str] = None
+    funciones_psiquicas: Optional[str] = None
+    sintomatologia: Optional[str] = None
+    habitos: Optional[str] = None
+
     consumo: Optional[str] = None
     antecedentes_psico: Optional[str] = None
     notas: Optional[str] = None
-
     background: Optional[str] = Field(default=None, alias="background")
     family_background: Optional[str] = Field(default=None, alias="family_background")
     medication: Optional[str] = Field(default=None, alias="medication")
     diagnosis: Optional[str] = Field(default=None, alias="diagnosis")
     psych_history: Optional[str] = Field(default=None, alias="psych_history")
+
+    reason_for_consult: Optional[str] = Field(default=None, alias="reason_for_consult")
+    psychic_functions: Optional[str] = Field(default=None, alias="psychic_functions")
+    symptoms: Optional[str] = Field(default=None, alias="symptoms")
+    habits: Optional[str] = Field(default=None, alias="habits")
 
     factores_protectores: Optional[str] = None
     protective_factors: Optional[str] = Field(default=None, alias="protective_factors")
@@ -96,12 +105,19 @@ class ClinicalHistoryBase(BaseModel):
             "medicacion_actual": self.medicacion_actual or self.medication,
             "alergias": self.alergias,
             "diagnosticos_previos": self.diagnosticos_previos or self.diagnosis,
+
+            # 👇 nuevos mapeos
+            "motivo_consulta": self.motivo_consulta or self.reason_for_consult,
+            "funciones_psiquicas": self.funciones_psiquicas or self.psychic_functions,
+            "sintomatologia": self.sintomatologia or self.symptoms,
+            "habitos": self.habitos or self.habits,
+
             "consumo": self.consumo,
             "antecedentes_psico": self.antecedentes_psico or self.psych_history,
             "notas": self.notas,
             "factores_protectores": self.factores_protectores or self.protective_factors,
-            
         }
+
 
 class ClinicalHistoryCreate(ClinicalHistoryBase):
     patient_id: int
@@ -118,6 +134,12 @@ class ClinicalHistoryOut(BaseModel):
     medicacion_actual: Optional[str] = None
     alergias: Optional[str] = None
     diagnosticos_previos: Optional[str] = None
+
+    motivo_consulta: Optional[str] = None
+    funciones_psiquicas: Optional[str] = None
+    sintomatologia: Optional[str] = None
+    habitos: Optional[str] = None
+
     consumo: Optional[str] = None
     antecedentes_psico: Optional[str] = None
     notas: Optional[str] = None
@@ -127,6 +149,7 @@ class ClinicalHistoryOut(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 # Therapeutic Plan
 class TherapeuticPlanBase(BaseModel):
