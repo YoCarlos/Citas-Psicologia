@@ -1,3 +1,4 @@
+// src/pages/psico/CreateAppointmentSchedule.jsx
 import React from "react"
 import MonthCalendar from "../../components/MonthCalendar"
 import { apiGet, apiPost } from "../../lib/api"
@@ -9,31 +10,68 @@ import { useNavigate } from "react-router-dom"
 const pad = (n) => String(n).padStart(2, "0")
 const TZ = "America/Guayaquil"
 
-const todayYMD = () => {
-    const now = new Date()
-    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+// ------------------------------
+// Helpers robustos de fecha/hora
+// ------------------------------
+const hasTZ = (s) => /Z$|[+\-]\d{2}:\d{2}$/.test(String(s || ""))
+
+/**
+ * Interpreta cualquier ISO así:
+ * - Si trae Z/offset => respeta el offset
+ * - Si NO trae zona  => trátalo como UTC agregando 'Z'
+ */
+const parseAny = (iso) => new Date(hasTZ(iso) ? iso : `${iso}Z`)
+
+// "Ahora" en GYE como Date (pared horaria GYE)
+const nowInGYE = () => {
+    const y = Number(new Date().toLocaleString("en-CA", { year: "numeric", timeZone: TZ }))
+    const m = Number(new Date().toLocaleString("en-CA", { month: "2-digit", timeZone: TZ }))
+    const d = Number(new Date().toLocaleString("en-CA", { day: "2-digit", timeZone: TZ }))
+    const hh = Number(new Date().toLocaleString("en-CA", { hour: "2-digit", hour12: false, timeZone: TZ }))
+    const mm = Number(new Date().toLocaleString("en-CA", { minute: "2-digit", timeZone: TZ }))
+    const ss = Number(new Date().toLocaleString("en-CA", { second: "2-digit", timeZone: TZ }))
+    return new Date(`${y}-${pad(m)}-${pad(d)}T${pad(hh)}:${pad(mm)}:${pad(ss)}-05:00`)
 }
+
+// Hoy YYYY-MM-DD en GYE
+const todayYMD = () => {
+    const now = nowInGYE()
+    const y = now.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
+    const m = now.toLocaleString("en-CA", { month: "2-digit", timeZone: TZ })
+    const d = now.toLocaleString("en-CA", { day: "2-digit", timeZone: TZ })
+    return `${y}-${m}-${d}`
+}
+
 const addDays = (date, days) => {
     const d = new Date(date)
     d.setDate(d.getDate() + days)
     return d
 }
+
+// Render siempre en GYE
 const toLocalHM = (isoString) =>
-    new Date(isoString).toLocaleTimeString("es-EC", {
+    parseAny(isoString).toLocaleTimeString("es-EC", {
         hour: "2-digit",
         minute: "2-digit",
         hour12: false,
         timeZone: TZ,
     })
+
 const getLocalHour = (isoString) =>
-    Number(new Date(isoString).toLocaleString("en-CA", { hour: "2-digit", hour12: false, timeZone: TZ }))
+    Number(parseAny(isoString).toLocaleString("en-CA", { hour: "2-digit", hour12: false, timeZone: TZ }))
+
 const toLocalYMD = (isoString) => {
-    const d = new Date(isoString)
+    const d = parseAny(isoString)
     const y = d.toLocaleString("en-CA", { year: "numeric", timeZone: TZ })
     const m = d.toLocaleString("en-CA", { month: "2-digit", timeZone: TZ })
     const day = d.toLocaleString("en-CA", { day: "2-digit", timeZone: TZ })
     return `${y}-${m}-${day}`
 }
+
+// Inicio / fin del día **en GYE** (pared horaria -05:00) -> luego .toISOString() (UTC)
+const startOfDayGYE = (ymd) => new Date(`${ymd}T00:00:00-05:00`)
+const endOfDayGYE = (ymd) => new Date(`${ymd}T23:59:59-05:00`)
+
 // Agrupa slots [{start_at,end_at}] por "YYYY-MM-DD" en TZ local y arma label "HH:MM–HH:MM"
 function groupSlotsByDay(slots) {
     const map = {}
@@ -48,10 +86,12 @@ function groupSlotsByDay(slots) {
         map[ymd].push({ startISO: s.start_at, endISO: s.end_at, label, isPM })
     }
     for (const k of Object.keys(map)) {
-        map[k].sort((a, b) => new Date(a.startISO) - new Date(b.startISO))
+        // ordenar por instante real (UTC) con parseAny
+        map[k].sort((a, b) => parseAny(a.startISO) - parseAny(b.startISO))
     }
     return map
 }
+
 // Divide [from, to) en ventanas de hasta maxDays días
 function chunkRanges(from, to, maxDays = 31) {
     const chunks = []
@@ -112,12 +152,12 @@ export default function CreateAppointmentSchedule() {
 
     const selectedSlots = availMap[selected] ?? []
 
-    // descarta slots que ya empezaron si el día seleccionado es hoy
+    // descarta slots que ya empezaron si el día seleccionado es hoy (comparando en GYE)
     const filteredSelectedSlots = React.useMemo(() => {
         const today = todayYMD()
         if (selected !== today) return selectedSlots
-        const now = new Date()
-        return selectedSlots.filter((s) => new Date(s.startISO) > now)
+        const now = nowInGYE()
+        return selectedSlots.filter((s) => parseAny(s.startISO) > now)
     }, [selected, selectedSlots])
 
     // separa en mañana/tarde
@@ -130,7 +170,7 @@ export default function CreateAppointmentSchedule() {
         [filteredSelectedSlots]
     )
 
-    // Carga inicial: pacientes + 60 días de disponibilidad desde hoy
+    // Carga inicial: pacientes + 60 días de disponibilidad desde hoy (GYE)
     React.useEffect(() => {
         if (!doctorId) {
             setErrorMsg("No encontramos la doctora asignada.")
@@ -149,18 +189,18 @@ export default function CreateAppointmentSchedule() {
                     }).toString()
                     const pats = await apiGet(`/users?${qs}`)
                     setPatients(Array.isArray(pats) ? pats : [])
-                } catch (e) {
-                    // No bloquea el resto
+                } catch {
                     setPatients([])
                 }
 
-                // 2) Slots (60 días, chunk 31)
-                const from = new Date()
-                const to = addDays(from, 60)
-                const ranges = chunkRanges(from, to, 31)
+                // 2) Slots (60 días, chunk 31) — construyendo rangos desde GYE
+                const fromGYE = nowInGYE()
+                const toGYE = addDays(fromGYE, 60)
+                const ranges = chunkRanges(fromGYE, toGYE, 31)
 
                 const allSlots = []
                 for (const win of ranges) {
+                    // IMPORTANTE: mandamos ISO UTC al backend, pero el rango nació desde GYE
                     const qs = new URLSearchParams({
                         doctor_id: String(doctorId),
                         date_from: win.from.toISOString(),
@@ -198,15 +238,19 @@ export default function CreateAppointmentSchedule() {
         for (const ymd of Object.keys(availMap)) {
             const daySlots = (availMap[ymd] || []).filter((s) => picked.has(keyOf(s)))
             if (daySlots.length) {
-                const sorted = [...daySlots].sort((a, b) => new Date(a.startISO) - new Date(b.startISO))
+                const sorted = [...daySlots].sort((a, b) => parseAny(a.startISO) - parseAny(b.startISO))
                 out.push({ ymd, slots: sorted })
             }
         }
         if (!out.find((g) => g.ymd === selected)) {
             const daySlots = (selectedSlots || []).filter((s) => picked.has(keyOf(s)))
-            if (daySlots.length) out.push({ ymd: selected, slots: daySlots })
+            if (daySlots.length) {
+                const sorted = [...daySlots].sort((a, b) => parseAny(a.startISO) - parseAny(b.startISO))
+                out.push({ ymd: selected, slots: sorted })
+            }
         }
-        out.sort((a, b) => new Date(a.ymd) - new Date(b.ymd))
+        // ordenar días por fecha (YYYY-MM-DD)
+        out.sort((a, b) => parseAny(`${a.ymd}T00:00:00Z`) - parseAny(`${b.ymd}T00:00:00Z`))
         return out
     }, [picked, availMap, selected, selectedSlots])
 
@@ -229,10 +273,12 @@ export default function CreateAppointmentSchedule() {
         const promises = items.map(({ start_at, end_at }) =>
             apiPost("/appointments", {
                 doctor_id: doctorId,
-                patient_id: Number(patientId), // 👈 Enviamos el ID del paciente
+                patient_id: Number(patientId),
+                // IMPORTANTE: enviamos ISO tal cual del slot (debería venir UTC/Z del backend)
+                // Si algún backend devuelve naive, igual quedará consistente con parseAny en UI.
                 start_at,
                 end_at,
-                method: "payphone",            // 👈 permitido por tu enum; backend forzará confirmed
+                method: "payphone",
             })
                 .then(appt => ({ key: `${start_at}|${end_at}`, status: "fulfilled", appt }))
                 .catch(err => ({ key: `${start_at}|${end_at}`, status: "rejected", error: err?.detail || err?.message || "Error" }))
@@ -286,7 +332,7 @@ export default function CreateAppointmentSchedule() {
                     "px-3 py-2 rounded-lg text-sm flex items-center gap-2 whitespace-nowrap font-mono tabular-nums border",
                     active
                         ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700"
-                        : "border-emerald-200 text-emerald-800 hover:bg-emerald-50"
+                        : "border-emerald-200 text-emerald-800 hover:bg-emerald-50",
                 ].join(" ")}
             >
                 <Clock4 className="h-4 w-4" />
@@ -319,9 +365,9 @@ export default function CreateAppointmentSchedule() {
                         onChange={(e) => setPatientId(e.target.value)}
                     >
                         <option value="">— Selecciona —</option>
-                        {patients.map(p => (
+                        {patients.map((p) => (
                             <option key={p.id} value={p.id}>
-                                {p.name || p.email} {/* muestra nombre; el value es el ID */}
+                                {p.name || p.email}
                             </option>
                         ))}
                     </select>
@@ -335,7 +381,7 @@ export default function CreateAppointmentSchedule() {
                 onChange={setSelected}
                 badges={badges}
                 locale="es-EC"
-                minDate={todayYMD()} // deshabilita pasados
+                minDate={todayYMD()} // deshabilita pasados (en GYE)
             />
 
             {/* Horarios del día */}
@@ -407,7 +453,7 @@ export default function CreateAppointmentSchedule() {
 
                 <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                     <div className="text-sm text-gray-700">
-                        Citas a crear: <span className="font-semibold">{pickedCount}</span>
+                        Citas a crear: <span className="font-semibold">{Array.from(picked).length}</span>
                     </div>
 
                     <div className="flex gap-2">
@@ -436,7 +482,7 @@ export default function CreateAppointmentSchedule() {
                 {/* Detalle de resultados (éxitos/errores) */}
                 {results.length > 0 && (
                     <div className="mt-4 space-y-2">
-                        {results.map(r => {
+                        {results.map((r) => {
                             const [start, end] = r.key.split("|")
                             const label = `${toLocalHM(start)}–${toLocalHM(end)}`
                             return (
